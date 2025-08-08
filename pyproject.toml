@@ -1,0 +1,94 @@
+[tool.poetry]
+name = "deep-learning-volatility"
+version = "0.1.0"
+description = "Framework for pricing and calibrating volatility surfaces using deep learning"
+authors = ["Bianchi Giacomo <giacomo.bianchi.97.bs@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/BianchiGiacomo/deep-learning-volatility"
+
+packages = [
+  { include = "deepLearningVolatility" }
+]
+
+[tool.poetry.dependencies]
+python = "^3.8.1"
+torch = ">=1.9.0,<3.0.0"
+tqdm = "^4.62.3"
+numpy = [{version = "^1.26", python = ">=3.9"}, {version = "<1.25", python = "=3.8"}]
+matplotlib = "^3.8.0"
+
+[tool.poetry.dev-dependencies]
+pytest = "^6.2.5"
+black = "21.9b0"
+isort = "5.9.3"
+pytest-cov = "^3.0.0"
+Sphinx = "^4.2.0"
+sphinx-autobuild = "^2021.3.14"
+sphinx-copybutton = "^0.4.0"
+furo = "^2021.9.22"
+codecov = "^2.1.12"
+click = "8.0.4"
+flake8 = "4.0.1"
+scipy = [{ version = "^1.10.1", markers = "python_version < '3.9'" }, { version = "^1.12.0", markers = "python_version >= '3.9'" }]
+mypy = "^1.11.1"
+pyproject-flake8 = "4.0.1"
+seaborn = "^0.13.0"
+spyder-kernels = "^2.5"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+markers = ["gpu: tests using gpu"]
+
+[tool.black]
+line-length = 88
+exclude = '/(__pycache__|__init__\.py|\.git|\.cache|\.mypy_cache|docs|build|dist|\.venv)/'
+
+[tool.isort]
+profile = 'black'
+ensure_newline_before_comments = true
+force_grid_wrap = 0
+force_single_line = true
+include_trailing_comma = true
+known_first_party = ["deepLearningVolatility"]
+skip = [
+    ".cache",
+    ".git",
+    "__pycache__",
+    "docs",
+    "build",
+    "dist",
+    ".venv"]
+line_length = 88
+multi_line_output = 3
+use_parentheses = true
+
+[tool.mypy]
+disallow_untyped_defs = true
+ignore_missing_imports = true
+exclude = [
+    ".cache",
+    ".git",
+    "__pycache__",
+    "docs",
+    "build",
+    "dist",
+    ".venv"]
+
+[tool.flake8]
+ignore = "E203,E231,E501,W503"
+max-line-length = 88
+exclude = [
+    ".cache",
+    ".git",
+    "__pycache__",
+    "docs",
+    "build",
+    "dist",
+    ".venv",
+    "__init__.py",
+    "qfeval",
+    ]
+select = "B,B950,C,E,F,W"

@@ -1,0 +1,322 @@
+"""
+Implementation of the Rough Heston model using the Hybrid Quadratic Exponential (HQE) scheme.
+Based on the methodology detailed in the master's thesis by Bertolo (2024) and the
+original work by Gatheral (2022) and Andersen (2007).
+Based on the methodology detailed in the master's thesis by Bertolo (2024).
+"""
+import torch
+import numpy as np
+from typing import Optional, Tuple, NamedTuple
+from scipy.special import gamma as scipy_gamma
+from deepLearningVolatility._utils.typing import TensorOrScalar
+from deepLearningVolatility.stochastic._utils import cast_state
+
+
+class SpotVarianceTuple(NamedTuple):
+    spot: torch.Tensor
+    variance: torch.Tensor
+
+
+def compute_forward_variance_curve(V0: float, theta: float, kappa: float, 
+                                  H: float, sigma: float, n_steps: int, 
+                                  dt: float, device=None, dtype=None) -> torch.Tensor:
+    """
+    Computes the theoretical forward variance curve ξ(t) = E[v_t].
+    
+    This function implements the exact formula for the unconditional mean of the
+    variance process, which accounts for mean reversion toward the long-term level θ.
+    
+    Reference:
+    - Bertolo, M. (2024), Appendix A, p. 75, citing Proposition 2.1 from [27].
+    - Formula: ξ(t) = V0 - (V0 - θ) ∫_0^t (λ/σ) k(s) ds
+    
+    For the power-law kernel k(s) = σ * s^(H-1/2) / Γ(H+1/2), this integral
+    can be computed analytically.
+    """
+    
+    xi = torch.zeros(n_steps + 1, device=device, dtype=dtype)
+    xi[0] = V0
+    
+    # Normalization constant including mean reversion speed
+    kernel_const = kappa / scipy_gamma(H + 0.5)
+    
+    # Compute ξ(t) for each time point
+    for n in range(1, n_steps + 1):
+        t = n * dt
+        
+        # Analytical integral of the power-law kernel
+        integral = (t ** (H + 0.5)) / (H + 0.5)
+        
+        # Forward variance formula with mean reversion
+        xi[n] = V0 - (V0 - theta) * kernel_const * integral
+    
+    return xi
+
+
+def compute_kernel_integrals(H: float, sigma: float, dt: float, n_steps: int):
+    """
+    Computes integrals of the power-law kernel required for the HQE scheme.
+
+    The power-law kernel is K(t) = σ * t^(H-0.5) / Γ(H+0.5). This function
+    calculates ζ_i(Δ) and ζ_{i,i}(Δ).
+
+    Reference:
+    - Bertolo, M. (2024). Two simulation schemes for the rough Heston model, Lemma 3.2.2.
+      (https://thesis.unipd.it/retrieve/feb1c5be-0c07-4ce4-9fb9-61242bfd22e5/Tesi_da_caricare.pdf)
+    """
+    
+    # Normalization constant for the kernel
+    c = sigma / scipy_gamma(H + 0.5)
+    
+    psi = torch.zeros(n_steps)
+    psi_ii = torch.zeros(n_steps)
+    
+    for i in range(n_steps):
+        # ζ_i(Δ): integral of the kernel over [(i)Δ, (i+1)Δ]
+        psi[i] = c * (dt ** (H + 0.5)) / (H + 0.5) * \
+                 ((i + 1) ** (H + 0.5) - i ** (H + 0.5))
+        
+        # ζ_{i,i}(Δ): integral of the squared kernel
+        psi_ii[i] = (c ** 2) * (dt ** (2 * H)) / (2 * H) * \
+                    ((i + 1) ** (2 * H) - i ** (2 * H))
+    
+    return psi, psi_ii
+
+
+def vectorized_qe_scheme(mean: torch.Tensor, var: torch.Tensor, Z: torch.Tensor) -> torch.Tensor:
+    """
+    Vectorized Quadratic Exponential (QE) scheme to generate non-negative random variables.
+
+    The scheme switches between a quadratic and an exponential form based on the
+    ratio ψ = var/mean², ensuring positivity of the variance process.
+
+    Reference:
+    - Andersen, L. B. G. (2007). Efficient simulation of the Heston stochastic volatility model.
+    - Bertolo, M. (2024), Appendix C.
+    """
+    
+    eps = 1e-10
+    mean_safe = torch.clamp(mean, min=eps)
+    
+    # Critical ratio ψ = var/mean²
+    psi = var / (mean_safe ** 2)
+    
+    result = torch.zeros_like(mean)
+    
+    # Case 1: Quadratic scheme (for low relative variance)
+    mask_quad = psi < 1.5
+    if mask_quad.any():
+        psi_quad = psi[mask_quad]
+        b2 = 2 / psi_quad - 1 + torch.sqrt(2 / psi_quad * (2 / psi_quad - 1))
+        a = mean_safe[mask_quad] / (1 + b2)
+        result[mask_quad] = a * (torch.sqrt(b2) + Z[mask_quad]) ** 2
+    
+    # Case 2: Exponential scheme (for high relative variance)
+    mask_exp = ~mask_quad
+    if mask_exp.any():
+        psi_exp = psi[mask_exp]
+        p = 2 / (1 + psi_exp)  # Probability of sampling zero
+        beta = mean_safe[mask_exp] / (1 - p) # Mean of the exponential part
+        
+        # Generate uniform random variables - rispetta antithetic
+        U = torch.rand_like(beta)
+        
+        # Inverse transform sampling for the mixed distribution
+        mask_nonzero = U > p
+        result[mask_exp] = torch.where(
+            mask_nonzero,
+            beta * torch.log((1 - p) / (1 - U)),
+            torch.zeros_like(beta)
+        )
+    
+    return torch.clamp(result, min=0)
+
+
+def vectorized_qe_bivariate(mean1: torch.Tensor, mean2: torch.Tensor, 
+                           var1: torch.Tensor, var2: torch.Tensor, 
+                           cov12: torch.Tensor, Z1: torch.Tensor, Z2: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Vectorized bivariate QE scheme to generate correlated variables (u_n, χ_n).
+    This is achieved via conditional sampling, using properties of bivariate
+    normal distributions to derive the conditional moments.
+    
+    Note: Z1 and Z2 are now passed as arguments to support antithetic sampling.
+    """
+    # 1. Sample the first variable unconditionally
+    val1 = vectorized_qe_scheme(mean1, var1, Z1)
+    
+    # 2. Sample the second variable from its conditional distribution
+    eps = 1e-10
+    rho = cov12 / torch.sqrt(torch.clamp(var1 * var2, min=eps))
+    rho = torch.clamp(rho, -0.999, 0.999)
+    
+    # Conditional mean: E[X₂ | X₁=x₁] = μ₂ + ρ(σ₂/σ₁)(x₁ - μ₁)
+    mean2_cond = mean2 + rho * torch.sqrt(var2 / torch.clamp(var1, min=eps)) * (val1 - mean1)
+    
+    # Conditional variance: Var(X₂ | X₁=x₁) = σ₂²(1 - ρ²)
+    var2_cond = var2 * (1 - rho ** 2)
+    
+    val2 = vectorized_qe_scheme(mean2_cond, var2_cond, Z2)
+    
+    return val1, val2
+
+
+def generate_rough_heston(
+    n_paths: int,
+    n_steps: int,
+    init_state: Optional[Tuple[TensorOrScalar, ...]] = None,
+    H: float = 0.1,
+    nu: float = 0.3,         # σ in the thesis (vol of vol)
+    rho: float = -0.7,
+    kappa: float = 0.3,      # λ in the thesis (mean reversion) 
+    theta: float = 0.02,
+    dt: float = 1 / 250,
+    dtype: Optional[torch.dtype] = None,
+    device: Optional[torch.device] = None,
+    antithetic: bool = False,
+) -> SpotVarianceTuple:
+    """
+    Generates paths of the Rough Heston model using the Hybrid Quadratic Exponential (HQE) scheme.
+    This implementation is fully vectorized for computational efficiency.
+
+    Reference:
+    - Gatheral, J. (2022). Efficient simulation of affine forward variance models.
+    - Bertolo, M. (2024), Section 3.2.
+      (https://thesis.unipd.it/retrieve/feb1c5be-0c07-4ce4-9fb9-61242bfd22e5/Tesi_da_caricare.pdf)
+    """
+    if init_state is None:
+        init_state = (1.0, theta)
+    
+    init_state = cast_state(init_state, dtype=dtype, device=device)
+    S0, V0 = init_state[0], init_state[1]
+    
+    # Antithetic sampling setup
+    if antithetic:
+        # Generate half paths + their antithetic counterparts
+        n_base = (n_paths + 1) // 2
+        n_anti = n_paths - n_base
+        effective_paths = n_base
+    else:
+        effective_paths = n_paths
+    
+    # Initialize arrays for storing paths
+    S = torch.zeros(n_paths, n_steps + 1, dtype=dtype, device=device)
+    V = torch.zeros(n_paths, n_steps + 1, dtype=dtype, device=device)
+    X = torch.zeros(n_paths, n_steps + 1, dtype=dtype, device=device)  # log(S)
+    
+    S[:, 0], V[:, 0], X[:, 0] = S0, V0, torch.log(S0)
+    
+    # Pre-compute kernel integrals
+    psi, psi_ii = compute_kernel_integrals(H, nu, dt, n_steps)
+    
+    # ξ(t) = E[v_t], the theoretical forward variance curve.
+    xi = compute_forward_variance_curve(V0, theta, kappa, H, nu, n_steps, dt, device=device, dtype=dtype)
+    
+    # Stores the history of χ_k for the recursive update of ξ̂
+    chi_history = torch.zeros(n_paths, n_steps, dtype=dtype, device=device)
+    
+    # ξ̂_n = E[v_n | F_{n-1}], the conditional forward variance. Initialized at ξ̂_0 = V_0
+    xi_hat_prev = torch.full((n_paths,), V0, dtype=dtype, device=device)
+    
+    # Pre-compute the weight matrix for the update of ξ̂.
+    # Reference: Bertolo (2024), Remark 15, p. 41.
+    n_idx, k_idx = torch.meshgrid(torch.arange(n_steps), torch.arange(n_steps), indexing='ij')
+    diff_idx = n_idx - k_idx
+    mask = (k_idx < n_idx) & (diff_idx < len(psi_ii))
+    
+    weights = torch.zeros(n_steps, n_steps, dtype=dtype, device=device)
+    if (psi_ii > 0).all():
+        weights[mask] = torch.sqrt(psi_ii[diff_idx[mask]] / dt)
+    
+    eps = 1e-8  # For numerical stability
+    
+    # Main time-stepping loop
+    for n in range(n_steps):
+        # --- HQE Algorithm Step-by-Step ---
+        
+        # Step 1: Compute v̄_n, an approximation of the average variance over the interval.
+        # Reference: Bertolo (2024), Remark 12, p. 38.
+        v_prev = V[:, n-1] if n > 0 else torch.full((n_paths,), V0, device=device, dtype=dtype)
+        v_bar = (xi_hat_prev + 2 * H * v_prev) / (2 * H + 1)
+        v_bar = torch.clamp(v_bar, min=eps)
+        
+        # Step 2: Compute conditional variances and covariance for the QE scheme.
+        # Reference: Bertolo (2024), Eq. (3.18), p. 38.
+        var_u = v_bar * psi_ii[0]      # var(u_n|F_{n-1})
+        var_chi = v_bar * dt           # var(χ_n|F_{n-1})
+        cov_u_chi = v_bar * psi[0]     # cov(u_n, χ_n|F_{n-1})
+        
+        # Step 3 & 4: Generate correlated innovations (u_n, χ_n) via bivariate QE.
+        # The variables are shifted by ξ̂_n/2 as required by the scheme.
+        # Reference: Bertolo (2024), Lemma 3.2.3, p. 40.
+        mean_shifted = xi_hat_prev / 2
+        
+        # Generate random normals with antithetic support
+        if antithetic:
+            Z1_base = torch.randn(effective_paths, device=device, dtype=dtype)
+            Z2_base = torch.randn(effective_paths, device=device, dtype=dtype)
+            
+            # Create antithetic pairs
+            if n_anti > 0:
+                Z1 = torch.cat([Z1_base, -Z1_base[:n_anti]])
+                Z2 = torch.cat([Z2_base, -Z2_base[:n_anti]])
+            else:
+                Z1, Z2 = Z1_base, Z2_base
+        else:
+            Z1 = torch.randn(n_paths, device=device, dtype=dtype)
+            Z2 = torch.randn(n_paths, device=device, dtype=dtype)
+        
+        u_shifted, chi_shifted = vectorized_qe_bivariate(
+            mean_shifted, mean_shifted, var_u, var_chi, cov_u_chi, Z1, Z2
+        )
+        
+        # Reverse the shift to get the final innovations
+        u_n = u_shifted - mean_shifted
+        chi_n = chi_shifted - mean_shifted
+        
+        # Step 5: Update the variance process.
+        # v_n = u_n + ξ̂_n, the decomposition of variance into innovation and expectation.
+        # Reference: Bertolo (2024), point 4 of the algorithm, p. 40.
+        V[:, n+1] = u_n + xi_hat_prev
+        V[:, n+1] = torch.clamp(V[:, n+1], min=0)
+        
+        # Store χ_n for future steps (capturing the non-Markovian nature)
+        chi_history[:, n] = chi_n
+        
+        # Step 6: Update the conditional forward variance for the next step, ξ̂_{n+1}.
+        # Reference: Bertolo (2024), Remark 15, p. 41.
+        if n < n_steps - 1:
+            # Base value from the theoretical forward variance curve
+            xi_hat_next = xi[n + 1] * torch.ones(n_paths, dtype=dtype, device=device)
+            
+            # Add the historical contribution via matrix multiplication (vectorized convolution)
+            if n >= 0:
+                hist_contrib = torch.matmul(chi_history[:, :n+1], weights[n, :n+1])
+                xi_hat_next = xi_hat_next + hist_contrib
+            
+            xi_hat_prev = torch.clamp(xi_hat_next, min=eps)
+
+        # Step 7: Update the log-price process.
+        # This is a trapezoidal rule discretization of the log-price SDE.
+        # Reference: Bertolo (2024), point 5 of the algorithm, p. 40.
+        v_avg = 0.5 * (V[:, n+1] + V[:, n])
+        if antithetic:
+            Z_perp_base = torch.randn(effective_paths, device=device, dtype=dtype)
+            if n_anti > 0:
+                Z_perp = torch.cat([Z_perp_base, -Z_perp_base[:n_anti]])
+            else:
+                Z_perp = Z_perp_base
+        else:
+			Z_perp = torch.randn(n_paths, dtype=dtype, device=device)
+        
+        X[:, n+1] = X[:, n] - 0.5 * v_avg * dt + \
+                      torch.sqrt(torch.clamp((1 - rho ** 2) * v_avg * dt, min=0)) * Z_perp + \
+                      rho * chi_n
+                      
+        S[:, n+1] = torch.exp(X[:, n+1])
+    
+    # The last value of the variance is set for consistency in the output array.
+    V[:, n_steps] = V[:, n_steps-1]
+    
+    # Return n_steps points, starting from t_1
+    return SpotVarianceTuple(S[:, 1:], V[:, 1:])
