@@ -347,18 +347,18 @@ class DatasetBuilder:
         if 'rough' in process_name:
             # Rough models need more paths
             return {
-                'n_paths': int(base_n_paths * 1.5),
+                'n_paths': int(base_n_paths),
                 'use_antithetic': True,
-                'adaptive_paths': True,
+                'adaptive_paths': False,
                 'adaptive_dt': True,
                 'control_variate': True
             }
         elif 'jump' in process_name:
             # Jump models
             return {
-                'n_paths': int(base_n_paths * 1.2),
+                'n_paths': int(base_n_paths),
                 'use_antithetic': True,
-                'adaptive_paths': False,  # Jumps don't benefit much
+                'adaptive_paths': False,
                 'adaptive_dt': False,
                 'control_variate': True
             }
@@ -367,7 +367,7 @@ class DatasetBuilder:
             return {
                 'n_paths': base_n_paths,
                 'use_antithetic': True,
-                'adaptive_paths': True,
+                'adaptive_paths': False,
                 'adaptive_dt': True,
                 'control_variate': True
             }
@@ -1103,6 +1103,208 @@ class DatasetBuilder:
         return theta_tensor, T_tensor, k_tensor, iv_tensor
     
 
+
+    # ---------------- Random Grid / Random Smiles (Baschetti et al.) ----------------
+    # Buckets temporali (Eq. 2) e parametri strikes (Eq. 3)
+    _maturity_buckets = [
+        (0.003, 0.030), (0.030, 0.090), (0.090, 0.150), (0.150, 0.300),
+        (0.300, 0.500), (0.500, 0.750), (0.750, 1.000), (1.000, 1.250),
+        (1.250, 1.500), (1.500, 2.000), (2.000, 2.500)
+    ]
+    _strike_params = dict(l=0.55, u=0.30, n_left_tail=4, n_center=7, n_right_tail=2, center_width=0.20)
+
+    def _sample_random_maturities(self, n_maturities: int = 11, buckets=None, seed: int = None):
+        """Campiona maturities casuali dai buckets e le ordina."""
+        if buckets is None:
+            buckets = self._maturity_buckets[:n_maturities]
+        rng = np.random.default_rng(seed)
+        mats = []
+        if n_maturities >= len(buckets):
+            for lo, hi in buckets:
+                mats.append(rng.uniform(lo, hi))
+            for _ in range(n_maturities - len(buckets)):
+                lo, hi = buckets[rng.integers(len(buckets))]
+                mats.append(rng.uniform(lo, hi))
+        else:
+            idx = rng.choice(len(buckets), n_maturities, replace=False)
+            for i in idx:
+                lo, hi = buckets[i]
+                mats.append(rng.uniform(lo, hi))
+        mats.sort()
+        return torch.tensor(mats, dtype=torch.float32, device=self.device)
+
+    def _sample_random_strikes(self, T: float, spot: float = 1.0, n_strikes: int = 13):
+        """Campiona strikes random rispettando la granularità tipica del mercato."""
+        p = self._strike_params
+        sqrt_T = float(np.sqrt(T))
+        K_min = spot * (1 - p['l'] * sqrt_T)
+        K_max = spot * (1 + p['u'] * sqrt_T)
+        # Guardrail per estremi numericamente problematici
+        K_min = max(K_min, 0.05 * spot)
+        K_max = min(K_max, 3.00 * spot)
+        center_lower = spot * (1 - p['center_width'] * sqrt_T)
+        center_upper = spot * (1 + p['center_width'] * sqrt_T)
+
+        n_left, n_center, n_right = p['n_left_tail'], p['n_center'], p['n_right_tail']
+        tot_default = n_left + n_center + n_right
+        if n_strikes != tot_default:
+            # ridistribuisci in proporzione, garantendo almeno 1 in ogni zona
+            n_left = max(1, int(round(p['n_left_tail'] * n_strikes / tot_default)))
+            n_center = max(1, int(round(p['n_center'] * n_strikes / tot_default)))
+            n_right = max(1, n_strikes - n_left - n_center)
+
+        rng = np.random.default_rng()
+        strikes = []
+        if n_left > 0 and K_min < center_lower:
+            strikes.extend(rng.uniform(K_min, center_lower, n_left))
+        if n_center > 0:
+            strikes.extend(rng.uniform(center_lower, center_upper, n_center))
+        if n_right > 0 and center_upper < K_max:
+            strikes.extend(rng.uniform(center_upper, K_max, n_right))
+        strikes = np.clip(np.sort(strikes), K_min, K_max)
+        return torch.tensor(strikes, dtype=torch.float32, device=self.device)
+
+    @torch.no_grad()
+    def _generate_random_grid(self, theta: torch.Tensor, n_maturities: int = 11,
+                              n_strikes_per_maturity: int = 13, spot: float = 1.0,
+                              mc_params: dict = None):
+        """Genera una griglia IV(T,K) random per un set di parametri theta."""
+        if mc_params is None:
+            mc_params = self.get_process_specific_mc_params()
+        mats = self._sample_random_maturities(n_maturities)
+        all_strikes, iv_grid = [], []
+        for T in mats:
+            strikes = self._sample_random_strikes(float(T.item()), spot, n_strikes_per_maturity)
+            logK = torch.log(strikes / spot)
+            pricer = GridNetworkPricer(
+                maturities=T.unsqueeze(0),
+                logK=logK,
+                process=self.process,
+                device=self.device,
+                r=0.0,
+                enable_smile_repair=True,
+                smile_repair_method='pchip'
+            )
+            iv_smile = pricer._mc_iv_grid(
+                theta=theta,
+                n_paths=mc_params.get('n_paths', 30000),
+                spot=spot,
+                use_antithetic=mc_params.get('use_antithetic', True),
+                adaptive_paths=mc_params.get('adaptive_paths', False),
+                adaptive_dt=mc_params.get('adaptive_dt', True),
+                control_variate=mc_params.get('control_variate', True)
+            ).squeeze(0)
+            all_strikes.append(strikes)
+            iv_grid.append(iv_smile)
+        return {'maturities': mats, 'strikes': all_strikes, 'iv_grid': torch.stack(iv_grid)}
+
+    def build_random_grids_dataset(self, n_surfaces: int = 10000, n_maturities: int = 11,
+                                   n_strikes: int = 13, n_paths: int = 30000, spot: float = 1.0,
+                                   normalize: bool = True, compute_stats_from=None,
+                                   show_progress: bool = True, batch_size: int = 50):
+        """Costruisce dataset pointwise con approccio Random Grids."""
+        print(f"\nBuilding Random Grids Pointwise Dataset: {n_surfaces} × {n_maturities} × {n_strikes}")
+        all_theta, all_T, all_k, all_iv = [], [], [], []
+        mc_params = self.get_process_specific_mc_params(base_n_paths=n_paths)
+
+        thetas = self.sample_theta_lhs(n_surfaces)
+        iterator = range(n_surfaces)
+        if show_progress:
+            try:
+                from tqdm import tqdm
+                iterator = tqdm(iterator, desc="Generating random grids")
+            except Exception:
+                pass
+
+        for i in iterator:
+            theta = thetas[i]
+            grid = self._generate_random_grid(theta, n_maturities, n_strikes, spot, mc_params)
+            for j, T in enumerate(grid['maturities']):
+                strikes = grid['strikes'][j]
+                logK = torch.log(strikes / spot)
+                iv_smile = grid['iv_grid'][j]
+                all_theta.extend([theta] * len(strikes))
+                all_T.extend([T] * len(strikes))
+                all_k.extend(list(logK))
+                all_iv.extend(list(iv_smile))
+            if (i + 1) % 10 == 0 and self.device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+        theta_pw = torch.stack(all_theta); T_pw = torch.stack(all_T)
+        k_pw = torch.stack(all_k); iv_pw = torch.stack(all_iv)
+
+        if normalize:
+            if compute_stats_from is None:
+                self.compute_normalization_stats(theta_pw, iv_pw, T_pw, k_pw)
+                self.save_normalization_stats()
+            else:
+                self._copy_stats_from(compute_stats_from)
+            return (self.normalize_theta(theta_pw), self.normalize_T(T_pw),
+                    self.normalize_k(k_pw), self.normalize_iv(iv_pw))
+
+        return theta_pw, T_pw, k_pw, iv_pw
+
+    def build_random_smiles_dataset(self, n_smiles: int = 50000, n_strikes_per_smile: int = 13,
+                                    n_paths: int = 30000, spot: float = 1.0, normalize: bool = True,
+                                    compute_stats_from=None, show_progress: bool = True):
+        """Variante leggera: una T random per ogni theta."""
+        print(f"\nBuilding Random Smiles Dataset: {n_smiles} × {n_strikes_per_smile}")
+        mc_params = self.get_process_specific_mc_params(base_n_paths=n_paths)
+        thetas = self.sample_theta_lhs(n_smiles)
+        all_theta, all_T, all_k, all_iv = [], [], [], []
+
+        iterator = range(n_smiles)
+        if show_progress:
+            try:
+                from tqdm import tqdm
+                iterator = tqdm(iterator, desc="Generating random smiles")
+            except Exception:
+                pass
+
+        for i in iterator:
+            lo, hi = self._maturity_buckets[np.random.randint(len(self._maturity_buckets))]
+            T = float(np.random.uniform(lo, hi))
+            T_t = torch.tensor(T, dtype=torch.float32, device=self.device)
+            strikes = self._sample_random_strikes(T, spot, n_strikes_per_smile)
+            logK = torch.log(strikes / spot)
+            pricer = GridNetworkPricer(
+                maturities=T_t.unsqueeze(0),
+                logK=logK,
+                process=self.process,
+                device=self.device,
+                r=0.0,
+                enable_smile_repair=True,
+                smile_repair_method='pchip'
+            )
+            iv_smile = pricer._mc_iv_grid(
+                theta=thetas[i],
+                n_paths=mc_params.get('n_paths', 30000),
+                spot=spot,
+                use_antithetic=mc_params.get('use_antithetic', True),
+                adaptive_paths=mc_params.get('adaptive_paths', False),
+                adaptive_dt=mc_params.get('adaptive_dt', True),
+                control_variate=mc_params.get('control_variate', True)
+            ).squeeze(0)
+
+            all_theta.extend([thetas[i]] * len(strikes))
+            all_T.extend([T_t] * len(strikes))
+            all_k.extend(list(logK))
+            all_iv.extend(list(iv_smile))
+
+            if (i + 1) % 100 == 0 and self.device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+        theta_pw = torch.stack(all_theta); T_pw = torch.stack(all_T)
+        k_pw = torch.stack(all_k); iv_pw = torch.stack(all_iv)
+        if normalize:
+            if compute_stats_from is None:
+                self.compute_normalization_stats(theta_pw, iv_pw, T_pw, k_pw)
+                self.save_normalization_stats()
+            else:
+                self._copy_stats_from(compute_stats_from)
+            return (self.normalize_theta(theta_pw), self.normalize_T(T_pw),
+                    self.normalize_k(k_pw), self.normalize_iv(iv_pw))
+        return theta_pw, T_pw, k_pw, iv_pw
 class MultiRegimeDatasetBuilder(DatasetBuilder):
     """
     Estende DatasetBuilder per gestire dataset multi-regime con processi generici.

@@ -307,7 +307,7 @@ def generate_rough_heston(
             else:
                 Z_perp = Z_perp_base
         else:
-			Z_perp = torch.randn(n_paths, dtype=dtype, device=device)
+            Z_perp = torch.randn(n_paths, dtype=dtype, device=device)
         
         X[:, n+1] = X[:, n] - 0.5 * v_avg * dt + \
                       torch.sqrt(torch.clamp((1 - rho ** 2) * v_avg * dt, min=0)) * Z_perp + \
