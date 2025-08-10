@@ -53,7 +53,7 @@ def compute_forward_variance_curve(V0: float, theta: float, kappa: float,
     return xi
 
 
-def compute_kernel_integrals(H: float, sigma: float, dt: float, n_steps: int):
+def compute_kernel_integrals(H: float, sigma: float, dt: float, n_steps: int, device=None, dtype=None):
     """
     Computes integrals of the power-law kernel required for the HQE scheme.
 
@@ -68,8 +68,8 @@ def compute_kernel_integrals(H: float, sigma: float, dt: float, n_steps: int):
     # Normalization constant for the kernel
     c = sigma / scipy_gamma(H + 0.5)
     
-    psi = torch.zeros(n_steps)
-    psi_ii = torch.zeros(n_steps)
+    psi = torch.zeros(n_steps, device=device, dtype=dtype)
+    psi_ii = torch.zeros(n_steps, device=device, dtype=dtype)
     
     for i in range(n_steps):
         # ζ_i(Δ): integral of the kernel over [(i)Δ, (i+1)Δ]
@@ -207,7 +207,7 @@ def generate_rough_heston(
     S[:, 0], V[:, 0], X[:, 0] = S0, V0, torch.log(S0)
     
     # Pre-compute kernel integrals
-    psi, psi_ii = compute_kernel_integrals(H, nu, dt, n_steps)
+    psi, psi_ii = compute_kernel_integrals(H, nu, dt, n_steps, device=device, dtype=dtype)
     
     # ξ(t) = E[v_t], the theoretical forward variance curve.
     xi = compute_forward_variance_curve(V0, theta, kappa, H, nu, n_steps, dt, device=device, dtype=dtype)
