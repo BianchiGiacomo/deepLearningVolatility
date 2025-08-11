@@ -1316,12 +1316,11 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
     """
     
     def __init__(self, process: Union[str, StochasticProcess], 
-                 device='cpu', output_dir=None, dataset_type='train',
+                 device='cpu', output_dir=None, dataset_type=None,
                  enable_smile_repair: bool = True,
                  smile_repair_method: str = 'pchip'):
         
         super().__init__(process, device, output_dir)
-        self.dataset_type = dataset_type
         
         # Statistiche separate per regime
         self.regime_stats = {
@@ -1344,6 +1343,28 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                 
         self.enable_smile_repair = enable_smile_repair
         self.smile_repair_method = smile_repair_method
+
+        # Normalizza dataset_type → "train" | "val"
+        self.dataset_type = (dataset_type or "train").lower()
+        if self.dataset_type in ("validation", "valid"):
+            self.dataset_type = "val"
+        assert self.dataset_type in ("train", "val"), "dataset_type deve essere 'train' o 'val'"
+
+        # Aggiungi sottocartelle per fase (train/val)
+        # Assumiamo che self.dirs e self.regime_dirs siano già creati prima
+        if self.output_dir:
+            # checkpoints/<phase>
+            self.dirs['checkpoints'] = os.path.join(self.dirs['checkpoints'], self.dataset_type)
+            os.makedirs(self.dirs['checkpoints'], exist_ok=True)
+            # unified/<phase>
+            self.regime_dirs['unified'] = os.path.join(self.regime_dirs['unified'], self.dataset_type)
+            os.makedirs(self.regime_dirs['unified'], exist_ok=True)
+        else:
+            # fallback locale
+            self.dirs['checkpoints'] = os.path.join("./checkpoints", self.dataset_type)
+            os.makedirs(self.dirs['checkpoints'], exist_ok=True)
+            self.regime_dirs['unified'] = os.path.join("./unified", self.dataset_type)
+            os.makedirs(self.regime_dirs['unified'], exist_ok=True)
     
     def compute_regime_normalization_stats(self, thetas, iv_short, iv_mid, iv_long):
         """
@@ -1406,98 +1427,70 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         self.regime_stats = stats['regime_stats']
         print(f"✓ Regime normalization stats loaded from: {path}")
     
-        
     def build_multi_regime_dataset(self, multi_regime_pricer, n_samples,
-                                  n_paths=30000, batch_size=50,
-                                  checkpoint_every=5, normalize=True,
-                                  compute_stats_from=None, resume_from=None,
-                                  mixed_precision=True, chunk_size=None,
-                                  sample_method='shared', force_regenerate=False):
+                                n_paths=30000, batch_size=50,
+                                checkpoint_every=5, normalize=True,
+                                compute_stats_from=None, resume_from=None,
+                                mixed_precision=True, chunk_size=None,
+                                sample_method='shared', force_regenerate=False):
         """
-        Costruisce dataset per MultiRegimeGridPricer.
-        
-        Args:
-            multi_regime_pricer: istanza di MultiRegimeGridPricer
-            n_samples: numero di campioni theta
-            n_paths: paths per Monte Carlo
-            batch_size: campioni per batch
-            checkpoint_every: salva checkpoint ogni N batch
-            normalize: se normalizzare i dati
-            compute_stats_from: MultiRegimeDatasetBuilder da cui prendere stats
-            resume_from: checkpoint da cui riprendere
-            mixed_precision: usa FP16 su GPU
-            chunk_size: dimensione chunk per MC
-            sample_method: 'shared' (stessi theta per tutti i regimi) o 
-                          'independent' (theta diversi per regime)
-        
-        Returns:
-            dict con keys 'short', 'mid', 'long', ognuno contenente (theta, iv)
+        Costruisce dataset per MultiRegimeGridPricer (con resume per-regime e checkpoint separati per phase).
         """
-        
+        import os, gc, pickle, time
+        from datetime import datetime
+        import torch
+        from tqdm.auto import tqdm
+
         process_name = self.process.__class__.__name__.lower()
+        phase = getattr(self, "dataset_type", "train")
 
-        # Usa lo stesso nome file che verrà poi salvato in _process_completed_multi_regime_dataset
+        # Se esiste già il dataset finale (per phase), carica e ritorna
         if self.output_dir:
-            final_path = f"{self.regime_dirs['unified']}/multi_regime_dataset_final.pkl"
+            final_path = os.path.join(self.regime_dirs['unified'], "multi_regime_dataset_final.pkl")
             if os.path.exists(final_path) and not resume_from and not force_regenerate:
-                print(f"✓ Multi-regime dataset finale già esistente per {self.process.__class__.__name__}!")
-                return self._load_final_multi_regime_dataset(
-                    final_path, normalize, compute_stats_from
-                )
+                print(f"✓ Multi-regime dataset {phase} già esistente per {self.process.__class__.__name__}!")
+                return self._load_final_multi_regime_dataset(final_path, normalize, compute_stats_from)
 
-        # Inizializza checkpoint manager (prefisso unico e coerente)
+        # Checkpoint manager separato per phase
         checkpoint_manager = CheckpointManager(
             self.dirs['checkpoints'] if self.output_dir else './checkpoints',
-            prefix='multi_regime',
+            prefix=f'multi_regime_{phase}',
             keep_last_n=9
         )
 
-        latest_checkpoint = checkpoint_manager.find_latest()
-
-        # Stato aggregato
+        # Stato aggregato iniziale
         all_data = {
             'short': {'theta': [], 'iv': []},
             'mid':   {'theta': [], 'iv': []},
             'long':  {'theta': [], 'iv': []}
         }
 
-        # Resume da checkpoint (per-regime) se disponibili e non si forza la rigenerazione
+        # Resume per‑regime dalla phase corrente
         if not force_regenerate:
             latest_per_regime = checkpoint_manager.find_latest_per_regime()
         else:
             latest_per_regime = {}
 
-        all_data = {
-            'short': {'theta': [], 'iv': []},
-            'mid':   {'theta': [], 'iv': []},
-            'long':  {'theta': [], 'iv': []}
-        }
-
         if latest_per_regime:
             print("Found per-regime checkpoints:",
                 ", ".join(os.path.basename(p) for p in latest_per_regime.values()))
 
-            # Scegli, per ciascun regime, il file con più campioni (max N)
+            # Prendi, per ciascun regime, il dataset più completo
             best = { 'short': (0, None), 'mid': (0, None), 'long': (0, None) }
-
-            # Carica e valuta i file trovati
-            for reg, path in latest_per_regime.items():
+            for _, path in latest_per_regime.items():
                 with open(path, 'rb') as f:
                     ck = pickle.load(f)
                 data = ck['data']
-                # usa la lunghezza dei theta come metrica di completezza
                 for r in ['short','mid','long']:
                     n = len(data[r]['theta'])
                     if n > best[r][0]:
                         best[r] = (n, data)
-
-            # Ricostruisci all_data prendendo per ciascun regime la versione migliore
             for r in ['short','mid','long']:
                 if best[r][1] is not None:
                     all_data[r]['theta'] = best[r][1][r]['theta']
                     all_data[r]['iv']    = best[r][1][r]['iv']
 
-        # Calcola progress per-regime
+        # Calcola progresso e rimanenti per-regime
         done = {reg: len(all_data[reg]['theta']) for reg in ['short','mid','long']}
         remaining = {reg: max(0, n_samples - done[reg]) for reg in ['short','mid','long']}
 
@@ -1508,11 +1501,8 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
             )
 
         # Generazione thetas rimanenti per ciascun regime
-        # Nota: se 'shared' ma riprendi a metà, non possiamo garantire identità perfetta
-        # tra regimi già esistenti; generiamo ciò che manca per ogni regime.
         theta_dict = {}
         if sample_method == 'shared':
-            # Genera un "pool" unico di thetas della dimensione massima richiesta
             max_rem = max(remaining.values())
             if max_rem > 0:
                 shared_thetas = self.sample_theta_lhs(max_rem)
@@ -1521,14 +1511,13 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
             for reg in ['short','mid','long']:
                 theta_dict[reg] = shared_thetas[:remaining[reg]]
         else:
-            # Indipendenti per regime (seed diversi per stabilità)
             seeds = {'short': 42, 'mid': 43, 'long': 44}
             for reg in ['short','mid','long']:
                 r = remaining[reg]
                 theta_dict[reg] = self.sample_theta_lhs(r, seed=seeds[reg]) if r > 0 else \
                                 torch.empty((0, len(self.param_names)), dtype=torch.float32, device=self.device)
 
-        # Process in batches per i soli regimi incompleti (short→mid→long)
+        # Process in batches per i soli regimi incompleti (short → mid → long)
         for regime in ['short','mid','long']:
             rem = remaining[regime]
             if rem == 0:
@@ -1589,7 +1578,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                 batch_time = time.time() - batch_start_time
                 print(f"✓ {regime} batch completed in {batch_time:.1f}s")
 
-                # Checkpoint coerente e per-regime
+                # Checkpoint coerente e per-regime (prefisso include phase)
                 if ((batch_idx // batch_size + 1) % checkpoint_every == 0):
                     n_done_reg = start_idx_reg + batch_end
                     checkpoint_data = {
@@ -1598,7 +1587,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                         'current_regime': regime,
                         'timestamp': datetime.now().isoformat()
                     }
-                    checkpoint_name = f"multi_regime_checkpoint_{regime}_{n_done_reg}.pkl"
+                    checkpoint_name = f"multi_regime_{phase}_checkpoint_{regime}_{n_done_reg}.pkl"
                     checkpoint_manager.save_checkpoint(checkpoint_data, checkpoint_name)
 
                 if self.device.type == 'cuda':
@@ -1614,66 +1603,71 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                 'current_regime': regime,
                 'timestamp': datetime.now().isoformat()
             }
-            checkpoint_name = f"multi_regime_checkpoint_{regime}_{n_done_reg}.pkl"
+            checkpoint_name = f"multi_regime_{phase}_checkpoint_{regime}_{n_done_reg}.pkl"
             checkpoint_manager.save_checkpoint(checkpoint_data, checkpoint_name)
 
         # Tutti i regimi dovrebbero essere completi ora
         return self._process_completed_multi_regime_dataset(
             all_data, normalize, compute_stats_from, cleanup_checkpoints=True
         )
+
     
     def _process_completed_multi_regime_dataset(self, all_data, normalize,
-                                              compute_stats_from, cleanup_checkpoints=False):
-        """Processa e salva dataset multi-regime completo"""
-        
+                                                compute_stats_from, cleanup_checkpoints=False):
+        """Processa e salva dataset multi-regime completo (per phase), con cleanup dei checkpoint."""
+        import os, pickle
+        from datetime import datetime
+        import torch
+        import re
+
+        phase = getattr(self, "dataset_type", "train")
+
         # Converti a tensori
         print("\nConverting to tensors...")
         datasets = {}
-        
         for regime in ['short', 'mid', 'long']:
             theta_tensor = torch.stack(all_data[regime]['theta']).to(self.device)
             iv_tensor = torch.stack(all_data[regime]['iv']).to(self.device)
-            
+
             datasets[regime] = {
                 'theta': theta_tensor,
                 'iv': iv_tensor
             }
-            
             print(f"{regime}: Theta shape {theta_tensor.shape}, IV shape {iv_tensor.shape}")
-        
-        # Salva dataset raw
+
+        # Salva dataset raw (per-regime e unificato nella cartella per phase)
         if self.output_dir:
-            # Salva per regime
+            # Per regime
             for regime in ['short', 'mid', 'long']:
                 regime_data = {
                     'theta': datasets[regime]['theta'].cpu(),
                     'iv': datasets[regime]['iv'].cpu(),
                     'timestamp': datetime.now().isoformat()
                 }
-                regime_path = f"{self.regime_dirs[regime]}/dataset_final.pkl"
+                regime_path = os.path.join(self.regime_dirs[regime], "dataset_final.pkl")
                 with open(regime_path, 'wb') as f:
                     pickle.dump(regime_data, f)
                 print(f"✓ {regime} dataset saved: {regime_path}")
-            
-            # Salva dataset unificato
+
+            # Unificato (nella dir unified della phase)
             unified_data = {
                 'short': datasets['short'],
                 'mid': datasets['mid'],
                 'long': datasets['long'],
                 'timestamp': datetime.now().isoformat()
             }
-            unified_path = f"{self.regime_dirs['unified']}/multi_regime_dataset_final.pkl"
+            unified_path = os.path.join(self.regime_dirs['unified'], "multi_regime_dataset_final.pkl")
             with open(unified_path, 'wb') as f:
                 pickle.dump(unified_data, f)
             print(f"✓ Unified dataset saved: {unified_path}")
-            
-            if cleanup_checkpoints:
-                checkpoint_dir = self.dirs['checkpoints']
-                files = [f for f in os.listdir(checkpoint_dir)
-                        if f.startswith('multi_regime_checkpoint_') and f.endswith('.pkl')]
 
-                import re
-                rx = re.compile(r"multi_regime_checkpoint_(short|mid|long)_(\d+)\.pkl$")
+            # Cleanup checkpoint files: tieni l'ultimo per ogni regime nella phase corrente
+            if cleanup_checkpoints:
+                checkpoint_dir = self.dirs['checkpoints']  # già include /train o /val se hai settato in __init__
+                files = [f for f in os.listdir(checkpoint_dir)
+                        if f.startswith(f"multi_regime_{phase}_checkpoint_") and f.endswith('.pkl')]
+
+                rx = re.compile(rf"multi_regime_{phase}_checkpoint_(short|mid|long)_(\d+)\.pkl$")
                 latest = {}
                 for f in files:
                     m = rx.match(f)
@@ -1688,25 +1682,22 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                 for f in files:
                     if f not in keep:
                         os.remove(os.path.join(checkpoint_dir, f)); removed += 1
-                print(f"✓ Removed {removed} multi-regime checkpoints; kept: {', '.join(sorted(keep))}")
+                print(f"✓ [{phase}] Removed {removed} checkpoints; kept: {', '.join(sorted(keep))}")
 
-        # Normalizzazione
+        # Normalizzazione (opzionale; attenzione al data leakage a monte)
         if normalize:
             if compute_stats_from is None:
-                # Calcola nuove statistiche
-                # Assumiamo theta comuni (o prendiamo la media)
-                theta_all = datasets['short']['theta']  # Se shared
-                
+                # Calcola nuove statistiche (theta condivisi: prendi 'short' per coerenza)
+                theta_all = datasets['short']['theta']
                 self.compute_regime_normalization_stats(
                     theta_all,
                     datasets['short']['iv'],
                     datasets['mid']['iv'],
                     datasets['long']['iv']
                 )
-                
                 if self.output_dir:
                     self.save_regime_normalization_stats()
-                
+
                 print(f"\nRegime normalization statistics computed:")
                 print(f"  Theta mean: {self.theta_mean}")
                 print(f"  Theta std: {self.theta_std}")
@@ -1714,41 +1705,37 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                     stats = self.regime_stats[regime]
                     print(f"  {regime} IV: mean={stats['iv_mean']:.4f}, std={stats['iv_std']:.4f}")
             else:
-                # Usa statistiche esistenti
+                # Usa statistiche esistenti (es. dal TRAIN)
                 self._copy_regime_stats_from(compute_stats_from)
                 print(f"\nUsing normalization statistics from training set")
-            
+
             # Applica normalizzazione
             normalized_datasets = {}
-            
             for regime in ['short', 'mid', 'long']:
                 theta_norm = self.normalize_theta(datasets[regime]['theta'])
                 iv_norm = self.normalize_iv_regime(datasets[regime]['iv'], regime)
-                
-                normalized_datasets[regime] = {
-                    'theta': theta_norm,
-                    'iv': iv_norm
-                }
-            
-            # Salva dataset normalizzati
+                normalized_datasets[regime] = {'theta': theta_norm, 'iv': iv_norm}
+
+            # Salva dataset normalizzati (opzionale)
             if self.output_dir:
                 norm_data = {
                     'datasets': normalized_datasets,
                     'theta_mean': self.theta_mean.cpu(),
                     'theta_std': self.theta_std.cpu(),
-                    'regime_stats': {k: {kk: vv.cpu() if torch.is_tensor(vv) else vv 
+                    'regime_stats': {k: {kk: vv.cpu() if torch.is_tensor(vv) else vv
                                         for kk, vv in v.items()}
                                     for k, v in self.regime_stats.items()},
                     'timestamp': datetime.now().isoformat()
                 }
-                norm_path = f"{self.regime_dirs['unified']}/multi_regime_dataset_normalized.pkl"
+                norm_path = os.path.join(self.regime_dirs['unified'], "multi_regime_dataset_normalized.pkl")
                 with open(norm_path, 'wb') as f:
                     pickle.dump(norm_data, f)
                 print(f"✓ Normalized dataset saved: {norm_path}")
-            
+
             return normalized_datasets
-        
+
         return datasets
+
     
     def _copy_regime_stats_from(self, other_builder):
         """Copia statistiche da un altro MultiRegimeDatasetBuilder"""
@@ -1855,18 +1842,39 @@ class CheckpointManager:
         self._cleanup_old_checkpoints()
     
     def _cleanup_old_checkpoints(self):
-        """Mantiene solo gli ultimi N checkpoint in base al tempo di modifica (mtime)."""
+    # Mantiene solo gli ultimi N per mtime, più robusto dell'ordine alfabetico
         paths = [
             os.path.join(self.checkpoint_dir, f)
             for f in os.listdir(self.checkpoint_dir)
             if f.startswith(self.prefix) and f.endswith('.pkl')
         ]
-        # Ordina per mtime crescente
         paths.sort(key=lambda p: os.path.getmtime(p))
         if len(paths) > self.keep_last_n:
             for old_p in paths[:-self.keep_last_n]:
                 os.remove(old_p)
 
+    # Elenco solo i checkpoint che rispettano il prefisso completo e il pattern "_checkpoint_"
+    def _list_checkpoints(self):
+        return [
+            os.path.join(self.checkpoint_dir, f)
+            for f in os.listdir(self.checkpoint_dir)
+            if f.startswith(self.prefix + "_checkpoint_") and f.endswith(".pkl")
+        ]
+
+    # Trova l'ultimo checkpoint per ciascun regime (short/mid/long) filtrando per prefix (quindi per phase)
+    def find_latest_per_regime(self):
+        import re, os
+        rx = re.compile(rf"{re.escape(self.prefix)}_checkpoint_(short|mid|long)_(\d+)\.pkl$")
+        latest = {}
+        for p in self._list_checkpoints():
+            m = rx.search(os.path.basename(p))
+            if not m:
+                continue
+            reg, n = m.group(1), int(m.group(2))
+            if (reg not in latest) or (n > latest[reg][0]):
+                latest[reg] = (n, p)
+        return {reg: path for reg, (n, path) in latest.items()}
+    
     def find_latest(self):
         """Trova l'ultimo checkpoint disponibile"""
         checkpoints = [
