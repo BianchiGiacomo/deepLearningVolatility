@@ -1449,7 +1449,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         checkpoint_manager = CheckpointManager(
             self.dirs['checkpoints'] if self.output_dir else './checkpoints',
             prefix='multi_regime',
-            keep_last_n=1
+            keep_last_n=9
         )
 
         latest_checkpoint = checkpoint_manager.find_latest()
@@ -1461,19 +1461,46 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
             'long':  {'theta': [], 'iv': []}
         }
 
-        # Resume da checkpoint se esiste (e non si forza la rigenerazione)
-        if latest_checkpoint and not force_regenerate:
-            print(f"Found checkpoint: {os.path.basename(latest_checkpoint)}")
-            with open(latest_checkpoint, 'rb') as f:
-                checkpoint_data = pickle.load(f)
-            # Contiene già tutti i regimi
-            all_data = checkpoint_data['data']
+        # Resume da checkpoint (per-regime) se disponibili e non si forza la rigenerazione
+        if not force_regenerate:
+            latest_per_regime = checkpoint_manager.find_latest_per_regime()
+        else:
+            latest_per_regime = {}
+
+        all_data = {
+            'short': {'theta': [], 'iv': []},
+            'mid':   {'theta': [], 'iv': []},
+            'long':  {'theta': [], 'iv': []}
+        }
+
+        if latest_per_regime:
+            print("Found per-regime checkpoints:",
+                ", ".join(os.path.basename(p) for p in latest_per_regime.values()))
+
+            # Scegli, per ciascun regime, il file con più campioni (max N)
+            best = { 'short': (0, None), 'mid': (0, None), 'long': (0, None) }
+
+            # Carica e valuta i file trovati
+            for reg, path in latest_per_regime.items():
+                with open(path, 'rb') as f:
+                    ck = pickle.load(f)
+                data = ck['data']
+                # usa la lunghezza dei theta come metrica di completezza
+                for r in ['short','mid','long']:
+                    n = len(data[r]['theta'])
+                    if n > best[r][0]:
+                        best[r] = (n, data)
+
+            # Ricostruisci all_data prendendo per ciascun regime la versione migliore
+            for r in ['short','mid','long']:
+                if best[r][1] is not None:
+                    all_data[r]['theta'] = best[r][1][r]['theta']
+                    all_data[r]['iv']    = best[r][1][r]['iv']
 
         # Calcola progress per-regime
         done = {reg: len(all_data[reg]['theta']) for reg in ['short','mid','long']}
         remaining = {reg: max(0, n_samples - done[reg]) for reg in ['short','mid','long']}
 
-        # Se tutti completi → vai al processing finale
         if all(v == 0 for v in remaining.values()):
             print("Dataset già completo!")
             return self._process_completed_multi_regime_dataset(
@@ -1640,31 +1667,28 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                 pickle.dump(unified_data, f)
             print(f"✓ Unified dataset saved: {unified_path}")
             
-            # Cleanup checkpoints
             if cleanup_checkpoints:
                 checkpoint_dir = self.dirs['checkpoints']
-                cps = [
-                    f for f in os.listdir(checkpoint_dir)
-                    if f.startswith('multi_regime_checkpoint_') and f.endswith('.pkl')
-                ]
+                files = [f for f in os.listdir(checkpoint_dir)
+                        if f.startswith('multi_regime_checkpoint_') and f.endswith('.pkl')]
 
-                # Raggruppa per regime e tieni il numero più alto
-                import re, os
-                latest_per_regime = {}
-                for f in cps:
-                    m = re.match(r"multi_regime_checkpoint_(short|mid|long)_(\d+)\.pkl", f)
-                    if m:
-                        regime, n = m.group(1), int(m.group(2))
-                        keep = latest_per_regime.get(regime)
-                        if keep is None or n > keep[0]:
-                            latest_per_regime[regime] = (n, f)
+                import re
+                rx = re.compile(r"multi_regime_checkpoint_(short|mid|long)_(\d+)\.pkl$")
+                latest = {}
+                for f in files:
+                    m = rx.match(f)
+                    if not m:
+                        continue
+                    reg, n = m.group(1), int(m.group(2))
+                    if (reg not in latest) or (n > latest[reg][0]):
+                        latest[reg] = (n, f)
 
-                keep_set = {v[1] for v in latest_per_regime.values()}
+                keep = {v[1] for v in latest.values()}
                 removed = 0
-                for f in cps:
-                    if f not in keep_set:
+                for f in files:
+                    if f not in keep:
                         os.remove(os.path.join(checkpoint_dir, f)); removed += 1
-                print(f"✓ Removed {removed} multi-regime checkpoint files; kept: {', '.join(sorted(keep_set))}")
+                print(f"✓ Removed {removed} multi-regime checkpoints; kept: {', '.join(sorted(keep))}")
 
         # Normalizzazione
         if normalize:
@@ -1875,4 +1899,30 @@ class CheckpointManager:
             return os.path.join(self.checkpoint_dir, latest[1])
         
         return None
+    
+    def _list_multi_regime_checkpoints(self):
+        base = self.checkpoint_dir
+        return [
+            os.path.join(base, f) for f in os.listdir(base)
+            if f.startswith('multi_regime_checkpoint_') and f.endswith('.pkl')
+        ]
+
+    def find_latest_per_regime(self):
+        """
+        Restituisce il path dell'ultimo checkpoint per ciascun regime
+        in base al numero alla fine del nome (…_{N}.pkl).
+        """
+        import re
+        latest = {}  # { 'short': (N, path), 'mid': (N, path), 'long': (N, path) }
+        rx = re.compile(r"multi_regime_checkpoint_(short|mid|long)_(\d+)\.pkl$")
+        for p in self._list_multi_regime_checkpoints():
+            m = rx.search(os.path.basename(p))
+            if not m:
+                continue
+            reg, n = m.group(1), int(m.group(2))
+            if (reg not in latest) or (n > latest[reg][0]):
+                latest[reg] = (n, p)
+        # ritorna solo i path
+        return {reg: path for reg, (n, path) in latest.items()}
+
     
