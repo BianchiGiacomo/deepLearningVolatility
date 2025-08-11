@@ -60,6 +60,7 @@ class DatasetBuilder:
             self.process = ProcessFactory.create(process)
         else:
             self.process = process
+        self.process_name = self.process.__class__.__name__.lower()
         
         # Update process-based bounds
         self._update_param_bounds()
@@ -172,7 +173,7 @@ class DatasetBuilder:
     def save_normalization_stats(self, path=None):
         """Save normalization statistics"""
         if path is None and self.output_dir:
-            path = f"{self.dirs['stats']}/normalization_stats.pt"
+            path = f"{self.dirs['stats']}/{self.process_name}_normalization_stats.pt"
         
         stats = {
             'theta_mean': self.theta_mean,
@@ -191,7 +192,7 @@ class DatasetBuilder:
     def load_normalization_stats(self, path=None):
         """Load normalization statistics"""
         if path is None and self.output_dir:
-            path = f"{self.dirs['stats']}/normalization_stats.pt"
+            path = f"{self.dirs['stats']}/{self.process_name}_normalization_stats.pt"
             
         stats = torch.load(path, map_location=self.device)
         self.theta_mean = stats['theta_mean']
@@ -492,8 +493,7 @@ class DatasetBuilder:
         """
         # Check if the final dataset already exists
         if self.output_dir:
-            process_name = self.process.__class__.__name__.lower()
-            final_dataset_path = f"{self.dirs['datasets']}/{process_name}_grid_dataset_final.pkl"
+            final_dataset_path = f"{self.dirs['datasets']}/{self.process_name}_grid_dataset_final.pkl"
             if os.path.exists(final_dataset_path):
                 print(f"✓ Dataset finale già esistente per {self.process.__class__.__name__}!")
                 return self._load_final_dataset(final_dataset_path, normalize, compute_stats_from)
@@ -501,7 +501,7 @@ class DatasetBuilder:
         # Initialize checkpoint manager with process-specific prefix
         checkpoint_manager = CheckpointManager(
             self.dirs['checkpoints'] if self.output_dir else './checkpoints',
-            prefix=f'{process_name}_grid_dataset'
+            prefix=f'{self.process_name}_grid_dataset'
         )
         
         # Resume from checkpoint if available
@@ -610,7 +610,7 @@ class DatasetBuilder:
                     'timestamp': datetime.now().isoformat()
                 }
                 
-                checkpoint_name = f"{process_name}_checkpoint_{start_idx + batch_end}.pkl"
+                checkpoint_name = f"{checkpoint_manager.prefix}_checkpoint_{start_idx + batch_end}.pkl"
                 checkpoint_manager.save_checkpoint(checkpoint_data, checkpoint_name)
                 
                 # Clear GPU memory
@@ -694,14 +694,13 @@ class DatasetBuilder:
         
         # Salva dataset raw se abbiamo output_dir
         if self.output_dir:
-            process_name = self.process.__class__.__name__.lower()
             final_data = {
                 'theta': theta_tensor.cpu(),
                 'iv': iv_tensor.cpu(),
                 'process': self.process.__class__.__name__,
                 'timestamp': datetime.now().isoformat()
             }
-            final_path = f"{self.dirs['datasets']}/{process_name}_grid_dataset_final.pkl"
+            final_path = f"{self.dirs['datasets']}/{self.process_name}_grid_dataset_final.pkl"
             with open(final_path, 'wb') as f:
                 pickle.dump(final_data, f)
             print(f"✓ Raw dataset saved: {final_path}")
@@ -709,8 +708,9 @@ class DatasetBuilder:
             # Cleanup checkpoints
             if cleanup_checkpoints:
                 checkpoint_dir = self.dirs['checkpoints']
-                checkpoints = [f for f in os.listdir(checkpoint_dir) 
-                             if f.startswith('checkpoint_') and f.endswith('.pkl')]
+                prefix = f"{self.process_name}_grid_dataset_checkpoint_"
+                checkpoints = [f for f in os.listdir(checkpoint_dir)
+                               if f.startswith(prefix) and f.endswith('.pkl')]
                 for cp in checkpoints:
                     os.remove(f"{checkpoint_dir}/{cp}")
                 print(f"✓ Removed {len(checkpoints)} checkpoint files")
@@ -747,7 +747,7 @@ class DatasetBuilder:
                     'iv_std': self.iv_std.cpu(),
                     'timestamp': datetime.now().isoformat()
                 }
-                norm_path = f"{self.dirs['datasets']}/grid_dataset_normalized.pkl"
+                norm_path = f"{self.dirs['datasets']}/{self.process_name}_grid_dataset_normalized.pkl"
                 with open(norm_path, 'wb') as f:
                     pickle.dump(norm_data, f)
                 print(f"✓ Normalized dataset saved: {norm_path}")
@@ -882,11 +882,9 @@ class DatasetBuilder:
         n_K = len(logK)
         total_points = n_theta * n_T * n_K
         
-        process_name = self.process.__class__.__name__.lower()
-        
         # Check se esiste già il dataset finale
         if self.output_dir:
-            final_dataset_path = f"{self.dirs['datasets']}/{process_name}_pointwise_dataset_final.pkl"
+            final_dataset_path = f"{self.dirs['datasets']}/{self.process_name}_pointwise_dataset_final.pkl"
             if os.path.exists(final_dataset_path) and not resume_from:
                 print(f"✓ Dataset finale già esistente per {self.process.__class__.__name__}!")
                 return self._load_final_pointwise_dataset(
@@ -896,7 +894,7 @@ class DatasetBuilder:
         # Inizializza checkpoint manager
         checkpoint_manager = CheckpointManager(
             self.dirs['checkpoints'] if self.output_dir else './checkpoints',
-            prefix=f'{process_name}_pointwise_dataset'
+            prefix=f'{self.process_name}_pointwise_dataset'
         )
         
         # Resume da checkpoint se disponibile
@@ -996,7 +994,7 @@ class DatasetBuilder:
                     'process': self.process.__class__.__name__,
                     'timestamp': datetime.now().isoformat()
                 }
-                checkpoint_name = f"{process_name}_checkpoint_{start_idx + batch_end}.pkl"
+                checkpoint_name = f"{checkpoint_manager.prefix}_checkpoint_{start_idx + batch_end}.pkl"
                 checkpoint_manager.save_checkpoint(checkpoint_data, checkpoint_name)
                 if self.device.type == 'cuda':
                     torch.cuda.empty_cache()
