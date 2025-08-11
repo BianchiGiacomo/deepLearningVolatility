@@ -1,16 +1,24 @@
 # -*- coding: utf-8 -*-
+
+"""Generation of synthetic training and validation datasets for neural volatility models.
+
+This module provides the tools to create large-scale, high-quality datasets
+required to train the neural network pricers. It automates the computationally
+intensive process of generating data by orchestrating parameter sampling,
+Monte Carlo simulations, and data normalization.
+
+The core components are designed to be generic, relying on the `StochasticProcess`
+interface to adapt the data generation to any underlying financial model.
+The module supports various data generation strategies, from fixed grids to the
+"Random Grids" approach proposed by Baschetti et al.
+Key classes include:
+
+- `DatasetBuilder`: The main factory class, configured for a specific process.
+- `MultiRegimeDatasetBuilder`: A specialization for creating datasets tailored
+  to the three maturity regimes (short, mid, long).
+- `CheckpointManager`: A utility for managing persistence and resumption of
+  long-running data generation tasks.
 """
-
-Questo modulo contiene le classi per la costruzione e la gestione di dataset
-utilizzati per l'addestramento dei modelli di pricing.
-
-"""
-
-__author__ = "Giacomo Bianchi"
-__license__ = "MIT"
-__version__ = "1.0.0"
-__email__ = "giacomo.bianchi.97.bs@gmail.com"
-__creation_date__ = "01/08/2025"
 
 import torch
 import numpy as np
@@ -30,33 +38,33 @@ from deepLearningVolatility.nn.pricer.pricer import GridNetworkPricer, Pointwise
 
 class DatasetBuilder:
     """
-    Dataset builder che supporta qualsiasi StochasticProcess.
+    Dataset builder that supports any StochasticProcess.
     """
     
     def __init__(self, process: Union[str, StochasticProcess], device='cpu', output_dir=None):
         """
         Args:
-            process: Nome del processo o istanza di StochasticProcess
+            process: Name of the process or StochasticProcess instance
             device: Device torch
-            output_dir: Directory per output
+            output_dir: Output directory
         """
         self.device = torch.device(device)
         self.output_dir = output_dir
         
-        # Setup directories se output_dir è specificato
+        # Setup directories if output_dir is specified
         if self.output_dir:
             self.setup_directories()
         
-        # Crea processo se passato come stringa
+        # Create process if passed as a string
         if isinstance(process, str):
             self.process = ProcessFactory.create(process)
         else:
             self.process = process
         
-        # Aggiorna bounds basati sul processo
+        # Update process-based bounds
         self._update_param_bounds()
         
-        # Inizializza statistiche (come nell'originale)
+        # Initialize statistics
         self.theta_mean = None
         self.theta_std = None
         self.iv_mean = None
@@ -67,40 +75,40 @@ class DatasetBuilder:
         self.k_std = None
     
     def _update_param_bounds(self):
-        """Aggiorna i bounds dei parametri basati sul processo."""
+        """Update process-based parameter bounds."""
         param_info = self.process.param_info
         self.param_bounds = {}
         
         for i, (name, bounds) in enumerate(zip(param_info.names, param_info.bounds)):
             self.param_bounds[name] = bounds
         
-        # Mantieni anche un mapping per indice
+        # Also maintain a per-index mapping
         self.param_names = param_info.names
         self.param_defaults = param_info.defaults
     
     def compute_normalization_stats(self, thetas, ivs, Ts=None, ks=None):
         """
-        Calcola media e deviazione standard per la normalizzazione.
-        
+        Calculate mean and standard deviation for normalization.
+
         Args:
-            thetas: parametri del modello [N, 4]
-            ivs: volatilità implicite (griglia o punti)
-            Ts: maturità (solo per pointwise)
-            ks: log-moneyness (solo per pointwise)
+            thetas: model parameters [N, 4]
+            ivs: implied volatilities (grid or points)
+            Ts: maturity (pointwise only)
+            ks: log-moneyness (pointwise only)
         """
-        # Statistiche per theta
+        # Statistics for theta
         self.theta_mean = thetas.mean(dim=0)
         self.theta_std = thetas.std(dim=0)
-        # Evita divisione per zero
+        # Avoid division by zero
         self.theta_std = torch.where(self.theta_std > 1e-6, self.theta_std, torch.ones_like(self.theta_std))
         
-        # Statistiche per IV
+        # Statistics for IV
         self.iv_mean = ivs.mean()
         self.iv_std = ivs.std()
         if self.iv_std < 1e-6:
             self.iv_std = torch.tensor(1.0, device=self.device)
         
-        # Statistiche per T e k (solo per pointwise)
+        # Statistics for T and k (pointwise only)
         if Ts is not None:
             self.T_mean = Ts.mean()
             self.T_std = Ts.std()
@@ -114,55 +122,55 @@ class DatasetBuilder:
                 self.k_std = torch.tensor(1.0, device=self.device)
     
     def normalize_theta(self, theta):
-        """Normalizza i parametri theta usando z-score normalization"""
+        """Normalize theta parameters using z-score normalization"""
         if self.theta_mean is None or self.theta_std is None:
             raise ValueError("Normalization stats not computed. Call compute_normalization_stats first.")
         return (theta - self.theta_mean) / self.theta_std
     
     def denormalize_theta(self, theta_norm):
-        """Denormalizza i parametri theta"""
+        """Denormalize theta parameters"""
         if self.theta_mean is None or self.theta_std is None:
             raise ValueError("Normalization stats not computed.")
         return theta_norm * self.theta_std + self.theta_mean
     
     def normalize_iv(self, iv):
-        """Normalizza le volatilità implicite"""
+        """Normalize implied volatilities"""
         if self.iv_mean is None or self.iv_std is None:
             raise ValueError("Normalization stats not computed. Call compute_normalization_stats first.")
         return (iv - self.iv_mean) / self.iv_std
     
     def denormalize_iv(self, iv_norm):
-        """Denormalizza le volatilità implicite"""
+        """Denormalizes implied volatilities"""
         if self.iv_mean is None or self.iv_std is None:
             raise ValueError("Normalization stats not computed.")
         return iv_norm * self.iv_std + self.iv_mean
     
     def normalize_T(self, T):
-        """Normalizza le maturità"""
+        """Normalize the maturity"""
         if self.T_mean is None or self.T_std is None:
             raise ValueError("Normalization stats not computed.")
         return (T - self.T_mean) / self.T_std
     
     def denormalize_T(self, T_norm):
-        """Denormalizza le maturità"""
+        """Denormalize the maturity"""
         if self.T_mean is None or self.T_std is None:
             raise ValueError("Normalization stats not computed.")
         return T_norm * self.T_std + self.T_mean
     
     def normalize_k(self, k):
-        """Normalizza il log-moneyness"""
+        """Normalize the log-moneyness"""
         if self.k_mean is None or self.k_std is None:
             raise ValueError("Normalization stats not computed.")
         return (k - self.k_mean) / self.k_std
     
     def denormalize_k(self, k_norm):
-        """Denormalizza il log-moneyness"""
+        """Denormalize the log-moneyness"""
         if self.k_mean is None or self.k_std is None:
             raise ValueError("Normalization stats not computed.")
         return k_norm * self.k_std + self.k_mean
     
     def save_normalization_stats(self, path=None):
-        """Salva le statistiche di normalizzazione"""
+        """Save normalization statistics"""
         if path is None and self.output_dir:
             path = f"{self.dirs['stats']}/normalization_stats.pt"
         
@@ -181,7 +189,7 @@ class DatasetBuilder:
         print(f"✓ Normalization stats saved: {path}")
     
     def load_normalization_stats(self, path=None):
-        """Carica le statistiche di normalizzazione"""
+        """Load normalization statistics"""
         if path is None and self.output_dir:
             path = f"{self.dirs['stats']}/normalization_stats.pt"
             
@@ -197,7 +205,7 @@ class DatasetBuilder:
         print(f"✓ Normalization stats loaded from: {path}")
         
     def setup_directories(self):
-        """Crea struttura directory per Google Colab"""
+        """Create directory structure for Google Colab"""
         self.dirs = {
             'datasets': f"{self.output_dir}/datasets",
             'checkpoints': f"{self.output_dir}/checkpoints",
@@ -210,32 +218,32 @@ class DatasetBuilder:
             
     def sample_theta_lhs(self, n_samples, seed=None):
         """
-        LHS sampling per il processo specifico.
+        LHS sampling for the specific process.
         """
-        # Estrai bounds come array
+        # Extract bounds as array
         bounds = np.array([self.param_bounds[name] for name in self.param_names])
         
-        # Crea sampler LHS
+        # Create LHS sampler
         sampler = qmc.LatinHypercube(d=self.process.num_params, seed=seed)
         
-        # Genera campioni nell'ipercubo unitario
+        # Generate samples in the unit hypercube
         unit_samples = sampler.random(n=n_samples)
         
-        # Scala ai bounds reali
+        # Scale to real bounds
         scaled_samples = qmc.scale(unit_samples, bounds[:, 0], bounds[:, 1])
         
         return torch.tensor(scaled_samples, dtype=torch.float32, device=self.device)
     
     def sample_theta_lhs_restricted(self, n_samples, seed=None, restriction_factor=0.5):
         """
-        LHS con range ristretto per test.
-        
+        LHS with restricted range for testing.
+
         Args:
-            restriction_factor: Frazione del range da usare (0.5 = usa metà del range)
+            restriction_factor: Fraction of the range to use (0.5 = use half the range)
         """
         bounds = np.array([self.param_bounds[name] for name in self.param_names])
         
-        # Riduci il range
+        # Reduce the range
         centers = (bounds[:, 0] + bounds[:, 1]) / 2
         ranges = bounds[:, 1] - bounds[:, 0]
         restricted_ranges = ranges * restriction_factor
@@ -245,7 +253,7 @@ class DatasetBuilder:
             centers + restricted_ranges / 2
         ])
         
-        # Assicura che i bounds ristretti siano validi
+        # Ensures that restricted bounds are valid
         restricted_bounds[:, 0] = np.maximum(restricted_bounds[:, 0], bounds[:, 0])
         restricted_bounds[:, 1] = np.minimum(restricted_bounds[:, 1], bounds[:, 1])
         
@@ -256,7 +264,7 @@ class DatasetBuilder:
         return torch.tensor(scaled_samples, dtype=torch.float32, device=self.device)
     
     def sample_theta_uniform(self, n_samples):
-        """Campionamento uniforme standard per confronto"""
+        """Standard uniform sampling for comparison"""
         bounds = np.array([self.param_bounds[name] for name in self.param_names])
         samples = []
         for _ in range(n_samples):
@@ -270,7 +278,7 @@ class DatasetBuilder:
     
     def create_pricer(self, maturities, logK, **pricer_kwargs):
         """
-        Crea un GridNetworkPricer per il processo.
+        Create a GridNetworkPricer for the process.
         """
         return GridNetworkPricer(
             maturities=maturities,
@@ -282,18 +290,16 @@ class DatasetBuilder:
     
     def visualize_sampling_with_labels(self, n_samples=100):
         """
-        Visualizza il sampling con labels specifici del processo.
-        """
-        import matplotlib.pyplot as plt
-        
-        # Genera campioni
+        View sampling with process-specific labels.
+        """        
+        # Generate samples
         uniform_samples = self.sample_theta_uniform(n_samples).cpu().numpy()
         lhs_samples = self.sample_theta_lhs(n_samples).cpu().numpy()
         
         param_names = self.param_names
         n_params = len(param_names)
         
-        # Crea subplot per ogni coppia di parametri
+        # Create subplots for each pair of parameters
         n_pairs = n_params * (n_params - 1) // 2
         n_cols = min(3, n_pairs)
         n_rows = (n_pairs + n_cols - 1) // n_cols
@@ -327,7 +333,7 @@ class DatasetBuilder:
                 
                 pair_idx += 1
         
-        # Nascondi subplot vuoti
+        # Hide empty subplots
         for idx in range(pair_idx, n_rows * n_cols * 2):
             row = idx // n_cols
             col = idx % n_cols
@@ -340,7 +346,7 @@ class DatasetBuilder:
     
     def get_process_specific_mc_params(self, base_n_paths: int = 30000) -> Dict:
         """
-        Ottiene parametri MC ottimizzati per il processo specifico.
+        Gets MC parameters optimized for the specific process.
         """
         process_name = self.process.__class__.__name__.lower()
         
@@ -385,19 +391,19 @@ class DatasetBuilder:
                           restricted=False, show_progress=True, normalize=True,
                           compute_stats_from=None):
         """
-        Costruisce dataset per GridNetworkPricer con normalizzazione opzionale.
-        Versione aggiornata per processi generici.
+        Builds datasets for GridNetworkPricer with optional normalization.
+        Updated version for generic processes.
         """
-        # Campiona theta
+        # Sample theta
         if restricted:
             thetas = self.sample_theta_lhs_restricted(n_samples)
         else:
             thetas = self.sample_theta_lhs(n_samples)
         
-        # Ottieni parametri MC ottimizzati per il processo
+        # Get process-optimized MC parameters
         mc_params = self.get_process_specific_mc_params()
         
-        # Genera IV surfaces
+        # Generate IV surfaces
         ivs = []
         invalid_count = 0
         
@@ -405,7 +411,7 @@ class DatasetBuilder:
         
         for i, theta in enumerate(iterator):
             try:
-                # Usa parametri MC ottimizzati
+                # Use optimized MC parameters
                 iv = pricer._mc_iv_grid(
                     theta, 
                     n_paths=mc_params['n_paths'],
@@ -415,11 +421,11 @@ class DatasetBuilder:
                     control_variate=mc_params['control_variate']
                 )
                 
-                # Verifica validità
+                # Check validity
                 if torch.isnan(iv).any() or torch.isinf(iv).any():
                     print(f"\nWarning: Invalid IV for theta {i}: {theta}")
                     invalid_count += 1
-                    # Usa volatilità di default basata sul processo
+                    # Use process-based default volatility
                     default_vol = self._get_process_default_volatility(theta)
                     iv = torch.full_like(iv, default_vol)
                 elif (iv < 0.01).any() or (iv > 2.0).any():
@@ -430,7 +436,7 @@ class DatasetBuilder:
             except Exception as e:
                 print(f"\nError processing theta {i}: {e}")
                 invalid_count += 1
-                # Fallback con volatilità di default
+                # Fallback with default volatility
                 default_vol = self._get_process_default_volatility(theta)
                 iv = torch.full(
                     (len(pricer.Ts), len(pricer.logKs)), 
@@ -449,10 +455,10 @@ class DatasetBuilder:
             print(f"  IV mean: {iv_tensor.mean():.4f}, std: {iv_tensor.std():.4f}")
             print(f"  Invalid samples: {invalid_count}")
         
-        # Normalizzazione
+        # Normalization
         if normalize:
             if compute_stats_from is None:
-                # Calcola statistiche da questo dataset
+                # Calculate statistics from this dataset
                 self.compute_normalization_stats(thetas, iv_tensor)
                 
                 if show_progress:
@@ -461,7 +467,7 @@ class DatasetBuilder:
                     print(f"  Theta std: {self.theta_std}")
                     print(f"  IV mean: {self.iv_mean:.4f}, std: {self.iv_std:.4f}")
             else:
-                # Usa statistiche da un altro builder
+                # Use stats from another builder
                 self.theta_mean = compute_stats_from.theta_mean
                 self.theta_std = compute_stats_from.theta_std
                 self.iv_mean = compute_stats_from.iv_mean
@@ -482,10 +488,9 @@ class DatasetBuilder:
                                 normalize=True, compute_stats_from=None,
                                 resume_from=None, mixed_precision=True, chunk_size: int = None):
         """
-        Versione ottimizzata per Google Colab con checkpoint e gestione memoria.
-        Aggiornata per processi generici.
+        Optimized version for Google Colab with checkpoints and memory management.
         """
-        # Check se esiste già il dataset finale
+        # Check if the final dataset already exists
         if self.output_dir:
             process_name = self.process.__class__.__name__.lower()
             final_dataset_path = f"{self.dirs['datasets']}/{process_name}_grid_dataset_final.pkl"
@@ -493,13 +498,13 @@ class DatasetBuilder:
                 print(f"✓ Dataset finale già esistente per {self.process.__class__.__name__}!")
                 return self._load_final_dataset(final_dataset_path, normalize, compute_stats_from)
         
-        # Inizializza checkpoint manager con prefix specifico per processo
+        # Initialize checkpoint manager with process-specific prefix
         checkpoint_manager = CheckpointManager(
             self.dirs['checkpoints'] if self.output_dir else './checkpoints',
             prefix=f'{process_name}_grid_dataset'
         )
         
-        # Resume da checkpoint se disponibile
+        # Resume from checkpoint if available
         start_idx = 0
         all_theta = []
         all_iv = []
@@ -518,7 +523,7 @@ class DatasetBuilder:
                     all_theta, all_iv, normalize, compute_stats_from
                 )
         
-        # Genera solo i theta mancanti
+        # Generate only the missing thetas
         remaining_samples = n_samples - start_idx
         if remaining_samples <= 0:
             return self._process_completed_dataset(
@@ -528,7 +533,7 @@ class DatasetBuilder:
         print(f"\nGenerating {remaining_samples} theta samples for {self.process.__class__.__name__}...")
         thetas = self.sample_theta_lhs(remaining_samples)
         
-        # Ottieni parametri MC ottimizzati
+        # Get optimized MC parameters
         mc_params = self.get_process_specific_mc_params(base_n_paths=n_paths)
         
         # Process in batches
@@ -544,7 +549,7 @@ class DatasetBuilder:
             # Timer per batch
             batch_start_time = time.time()
             
-            # Process batch con mixed precision
+            # Batch process with mixed precision
             iv_batch = []
             with torch.cuda.amp.autocast(enabled=mixed_precision and self.device.type == 'cuda'):
                 for theta in tqdm(batch_thetas, desc=f"Computing {process_name} IV grids"):
@@ -559,19 +564,19 @@ class DatasetBuilder:
                             chunk_size=chunk_size
                         )
                         
-                        # Verifica validità
+                        # Check validity
                         if torch.isnan(iv_grid).any() or torch.isinf(iv_grid).any():
-                            print(f"⚠️  Invalid IV detected, using fallback")
+                            print(f"!  Invalid IV detected, using fallback")
                             default_vol = self._get_process_default_volatility(theta)
                             iv_grid = torch.full_like(iv_grid, default_vol)
                         elif (iv_grid < 0.01).any() or (iv_grid > 2.0).any():
-                            print(f"⚠️  Extreme IV values: [{iv_grid.min():.4f}, {iv_grid.max():.4f}]")
+                            print(f"!  Extreme IV values: [{iv_grid.min():.4f}, {iv_grid.max():.4f}]")
                             iv_grid = torch.clamp(iv_grid, 0.01, 2.0)
                         
                         iv_batch.append(iv_grid.cpu())
                         
                     except Exception as e:
-                        print(f"❌ Error processing theta: {e}")
+                        print(f"X Error processing theta: {e}")
                         default_vol = self._get_process_default_volatility(theta)
                         iv_grid = torch.full(
                             (len(pricer.Ts), len(pricer.logKs)),
@@ -1430,108 +1435,100 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         """
         
         process_name = self.process.__class__.__name__.lower()
-        
-        # Check se esiste già il dataset finale
+
+        # Usa lo stesso nome file che verrà poi salvato in _process_completed_multi_regime_dataset
         if self.output_dir:
-            final_path = f"{self.regime_dirs['unified']}/{process_name}_multi_regime_dataset_final.pkl"
+            final_path = f"{self.regime_dirs['unified']}/multi_regime_dataset_final.pkl"
             if os.path.exists(final_path) and not resume_from and not force_regenerate:
                 print(f"✓ Multi-regime dataset finale già esistente per {self.process.__class__.__name__}!")
                 return self._load_final_multi_regime_dataset(
                     final_path, normalize, compute_stats_from
                 )
-        
-        # Inizializza checkpoint manager
+
+        # Inizializza checkpoint manager (prefisso unico e coerente)
         checkpoint_manager = CheckpointManager(
             self.dirs['checkpoints'] if self.output_dir else './checkpoints',
-            prefix='multi_regime'
+            prefix='multi_regime',
+            keep_last_n=1
         )
-        
-        # Check for existing checkpoints
+
         latest_checkpoint = checkpoint_manager.find_latest()
-        
-        # Resume da checkpoint se disponibile
-        start_idx = 0
+
+        # Stato aggregato
         all_data = {
             'short': {'theta': [], 'iv': []},
-            'mid': {'theta': [], 'iv': []},
-            'long': {'theta': [], 'iv': []}
+            'mid':   {'theta': [], 'iv': []},
+            'long':  {'theta': [], 'iv': []}
         }
-        
+
+        # Resume da checkpoint se esiste (e non si forza la rigenerazione)
         if latest_checkpoint and not force_regenerate:
             print(f"Found checkpoint: {os.path.basename(latest_checkpoint)}")
             with open(latest_checkpoint, 'rb') as f:
                 checkpoint_data = pickle.load(f)
-            
+            # Contiene già tutti i regimi
             all_data = checkpoint_data['data']
-            start_idx = checkpoint_data['n_samples_done']
-            current_regime = checkpoint_data.get('current_regime', 'short')
-            
-            if current_regime == 'short' and start_idx >= n_samples:
-                # Short completato, inizia dal mid
-                regimes = ['mid', 'long']
-            elif current_regime == 'mid' and start_idx >= n_samples:
-                # Mid completato, inizia da long
-                regimes = ['long']
-            else:
-                # Riprendi dal regime corrente
-                regimes = [current_regime, 'mid', 'long'] if current_regime == 'short' else \
-                          [current_regime, 'long'] if current_regime == 'mid' else \
-                          ['long']
-                            
-            print(f"Resuming from sample {start_idx}/{n_samples}")
-            
-            if start_idx >= n_samples:
-                print("Dataset già completo!")
-                return self._process_completed_multi_regime_dataset(
-                    all_data, normalize, compute_stats_from
-                )
-            
-        # Genera theta samples
-        remaining_samples = n_samples - start_idx
-        if remaining_samples <= 0:
+
+        # Calcola progress per-regime
+        done = {reg: len(all_data[reg]['theta']) for reg in ['short','mid','long']}
+        remaining = {reg: max(0, n_samples - done[reg]) for reg in ['short','mid','long']}
+
+        # Se tutti completi → vai al processing finale
+        if all(v == 0 for v in remaining.values()):
+            print("Dataset già completo!")
             return self._process_completed_multi_regime_dataset(
                 all_data, normalize, compute_stats_from
             )
-        
-        print(f"\nGenerating {remaining_samples} theta samples...")
-        
+
+        # Generazione thetas rimanenti per ciascun regime
+        # Nota: se 'shared' ma riprendi a metà, non possiamo garantire identità perfetta
+        # tra regimi già esistenti; generiamo ciò che manca per ogni regime.
+        theta_dict = {}
         if sample_method == 'shared':
-            # Stessi theta per tutti i regimi
-            thetas = self.sample_theta_lhs(remaining_samples)
-            theta_dict = {
-                'short': thetas,
-                'mid': thetas,
-                'long': thetas
-            }
+            # Genera un "pool" unico di thetas della dimensione massima richiesta
+            max_rem = max(remaining.values())
+            if max_rem > 0:
+                shared_thetas = self.sample_theta_lhs(max_rem)
+            else:
+                shared_thetas = torch.empty((0, len(self.param_names)), dtype=torch.float32, device=self.device)
+            for reg in ['short','mid','long']:
+                theta_dict[reg] = shared_thetas[:remaining[reg]]
         else:
-            # Theta indipendenti per regime (potenzialmente con bounds diversi)
-            theta_dict = {
-                'short': self.sample_theta_lhs(remaining_samples, seed=42),
-                'mid': self.sample_theta_lhs(remaining_samples, seed=43),
-                'long': self.sample_theta_lhs(remaining_samples, seed=44)
-            }
-        
-        # Process in batches per ogni regime
-        regimes = ['short', 'mid', 'long']
-        
-        for regime in regimes:
+            # Indipendenti per regime (seed diversi per stabilità)
+            seeds = {'short': 42, 'mid': 43, 'long': 44}
+            for reg in ['short','mid','long']:
+                r = remaining[reg]
+                theta_dict[reg] = self.sample_theta_lhs(r, seed=seeds[reg]) if r > 0 else \
+                                torch.empty((0, len(self.param_names)), dtype=torch.float32, device=self.device)
+
+        # Process in batches per i soli regimi incompleti (short→mid→long)
+        for regime in ['short','mid','long']:
+            rem = remaining[regime]
+            if rem == 0:
+                print(f"\n{regime.upper()} TERM regime già completo ({done[regime]}/{n_samples})")
+                continue
+
             print(f"\n{'='*50}")
             print(f"Processing {regime.upper()} TERM regime")
             print(f"{'='*50}")
-            
+
             regime_thetas = theta_dict[regime]
             pricer = getattr(multi_regime_pricer, f"{regime}_term_pricer")
-            
+
+            # progress locale al regime
+            start_idx_reg = done[regime]
+
             for batch_idx in range(0, len(regime_thetas), batch_size):
                 batch_end = min(batch_idx + batch_size, len(regime_thetas))
                 batch_thetas = regime_thetas[batch_idx:batch_end]
-                
-                current_total = start_idx + batch_end
-                print(f"\n[{regime} - Batch {(batch_idx//batch_size)+1}] Samples {start_idx + batch_idx + 1}-{current_total}/{n_samples}")
-                
+
+                current_total_reg = start_idx_reg + batch_end
+                print(f"\n[{regime} - Batch {(batch_idx//batch_size)+1}] "
+                    f"Samples {start_idx_reg + batch_idx + 1}-{current_total_reg}/{n_samples}")
+
                 batch_start_time = time.time()
-                
-                # Process batch
+
+                # Compute IV
                 iv_batch = []
                 with torch.cuda.amp.autocast(enabled=mixed_precision and self.device.type == 'cuda'):
                     for theta in tqdm(batch_thetas, desc=f"Computing {regime} IV grids"):
@@ -1544,66 +1541,56 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                                 control_variate=True,
                                 chunk_size=chunk_size
                             )
-                            
-                            # Verifica validità
                             if torch.isnan(iv_grid).any() or torch.isinf(iv_grid).any():
-                                print(f"⚠️  Invalid IV detected, using fallback")
+                                print("!  Invalid IV detected, using fallback")
                                 iv_grid = torch.full_like(iv_grid, 0.2)
-                            
                             iv_batch.append(iv_grid.cpu())
-                            
                         except Exception as e:
-                            print(f"❌ Error processing theta: {e}")
+                            print(f"X Error processing theta: {e}")
                             iv_grid = torch.full(
-                                (len(pricer.Ts), len(pricer.logKs)),
-                                0.2,
-                                device=self.device
+                                (len(pricer.Ts), len(pricer.logKs)), 0.2, device=self.device
                             )
                             iv_batch.append(iv_grid.cpu())
-                        
-                        # Clear cache periodicamente
+
                         if len(iv_batch) % 10 == 0 and self.device.type == 'cuda':
                             torch.cuda.empty_cache()
-                
-                # Aggiungi ai dati
+
+                # Accumula
                 all_data[regime]['theta'].extend([t.cpu() for t in batch_thetas])
                 all_data[regime]['iv'].extend(iv_batch)
-                
+
                 batch_time = time.time() - batch_start_time
                 print(f"✓ {regime} batch completed in {batch_time:.1f}s")
-                
-                # Checkpoint dopo ogni N batch
+
+                # Checkpoint coerente e per-regime
                 if ((batch_idx // batch_size + 1) % checkpoint_every == 0):
+                    n_done_reg = start_idx_reg + batch_end
                     checkpoint_data = {
                         'data': all_data,
-                        'n_samples_done': start_idx + batch_end,
                         'n_samples_total': n_samples,
                         'current_regime': regime,
                         'timestamp': datetime.now().isoformat()
                     }
-                    
-                    checkpoint_name = f"multi_regime_checkpoint_{regime}_{start_idx + batch_end}.pkl"
+                    checkpoint_name = f"multi_regime_checkpoint_{regime}_{n_done_reg}.pkl"
                     checkpoint_manager.save_checkpoint(checkpoint_data, checkpoint_name)
-                
-                # Clear GPU memory
+
                 if self.device.type == 'cuda':
                     torch.cuda.empty_cache()
                     gc.collect()
-            
-            # Checkpoint dopo ogni regime
+
+            # Checkpoint di fine regime con stesso prefisso
+            n_done_reg = len(all_data[regime]['theta'])
             checkpoint_data = {
                 'data': all_data,
-                'n_samples_done': start_idx + len(regime_thetas),
                 'n_samples_total': n_samples,
                 'n_paths': n_paths,
                 'current_regime': regime,
                 'timestamp': datetime.now().isoformat()
             }
-            
-            checkpoint_name = f"checkpoint_{regime}_{start_idx + len(regime_thetas)}.pkl"
+            checkpoint_name = f"multi_regime_checkpoint_{regime}_{n_done_reg}.pkl"
             checkpoint_manager.save_checkpoint(checkpoint_data, checkpoint_name)
-        
-        # Processa dataset completo
+
+        # Tutti i regimi dovrebbero essere completi ora
         return self._process_completed_multi_regime_dataset(
             all_data, normalize, compute_stats_from, cleanup_checkpoints=True
         )
@@ -1656,12 +1643,29 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
             # Cleanup checkpoints
             if cleanup_checkpoints:
                 checkpoint_dir = self.dirs['checkpoints']
-                checkpoints = [f for f in os.listdir(checkpoint_dir)
-                             if f.startswith('checkpoint_') and f.endswith('.pkl')]
-                for cp in checkpoints:
-                    os.remove(f"{checkpoint_dir}/{cp}")
-                print(f"✓ Removed {len(checkpoints)} checkpoint files")
-        
+                cps = [
+                    f for f in os.listdir(checkpoint_dir)
+                    if f.startswith('multi_regime_checkpoint_') and f.endswith('.pkl')
+                ]
+
+                # Raggruppa per regime e tieni il numero più alto
+                import re, os
+                latest_per_regime = {}
+                for f in cps:
+                    m = re.match(r"multi_regime_checkpoint_(short|mid|long)_(\d+)\.pkl", f)
+                    if m:
+                        regime, n = m.group(1), int(m.group(2))
+                        keep = latest_per_regime.get(regime)
+                        if keep is None or n > keep[0]:
+                            latest_per_regime[regime] = (n, f)
+
+                keep_set = {v[1] for v in latest_per_regime.values()}
+                removed = 0
+                for f in cps:
+                    if f not in keep_set:
+                        os.remove(os.path.join(checkpoint_dir, f)); removed += 1
+                print(f"✓ Removed {removed} multi-regime checkpoint files; kept: {', '.join(sorted(keep_set))}")
+
         # Normalizzazione
         if normalize:
             if compute_stats_from is None:
@@ -1827,16 +1831,18 @@ class CheckpointManager:
         self._cleanup_old_checkpoints()
     
     def _cleanup_old_checkpoints(self):
-        """Mantiene solo gli ultimi N checkpoint"""
-        checkpoints = sorted([
-            f for f in os.listdir(self.checkpoint_dir)
+        """Mantiene solo gli ultimi N checkpoint in base al tempo di modifica (mtime)."""
+        paths = [
+            os.path.join(self.checkpoint_dir, f)
+            for f in os.listdir(self.checkpoint_dir)
             if f.startswith(self.prefix) and f.endswith('.pkl')
-        ])
-        
-        if len(checkpoints) > self.keep_last_n:
-            for old_cp in checkpoints[:-self.keep_last_n]:
-                os.remove(f"{self.checkpoint_dir}/{old_cp}")
-    
+        ]
+        # Ordina per mtime crescente
+        paths.sort(key=lambda p: os.path.getmtime(p))
+        if len(paths) > self.keep_last_n:
+            for old_p in paths[:-self.keep_last_n]:
+                os.remove(old_p)
+
     def find_latest(self):
         """Trova l'ultimo checkpoint disponibile"""
         checkpoints = [
