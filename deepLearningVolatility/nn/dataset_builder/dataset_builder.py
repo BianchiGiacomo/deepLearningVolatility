@@ -485,22 +485,30 @@ class DatasetBuilder:
             return thetas, iv_tensor
     
     def build_grid_dataset_colab(self, pricer: GridNetworkPricer, n_samples, n_paths=30000, 
-                                batch_size=50, checkpoint_every=5,
-                                normalize=True, compute_stats_from=None,
-                                resume_from=None, mixed_precision=True, chunk_size: int = None):
+                                    batch_size=50, checkpoint_every=5,
+                                    normalize=True, compute_stats_from=None,
+                                    resume_from=None, mixed_precision=True, chunk_size: int = None,
+                                    split: str = 'train'):
         """
         Optimized version for Google Colab with checkpoints and memory management.
         """
+        # --- split dirs (train/val) ---
+        split = split.lower()
+        assert split in ('train', 'val'), "split must be 'train' or 'val'"
+        ds_dir = (os.path.join(self.dirs['datasets'], split) 
+                  if self.output_dir else os.path.join('./datasets', split))
+        ckpt_dir = (os.path.join(self.dirs['checkpoints'], split) 
+                    if self.output_dir else os.path.join('./checkpoints', split))
+        os.makedirs(ds_dir, exist_ok=True); os.makedirs(ckpt_dir, exist_ok=True)
         # Check if the final dataset already exists
-        if self.output_dir:
-            final_dataset_path = f"{self.dirs['datasets']}/{self.process_name}_grid_dataset_final.pkl"
-            if os.path.exists(final_dataset_path):
-                print(f"✓ Dataset finale già esistente per {self.process.__class__.__name__}!")
-                return self._load_final_dataset(final_dataset_path, normalize, compute_stats_from)
+        final_dataset_path = f"{ds_dir}/{self.process_name}_grid_dataset_final.pkl"
+        if os.path.exists(final_dataset_path):
+            print(f"✓ Dataset finale già esistente per {self.process.__class__.__name__} ({split})!")
+            return self._load_final_dataset(final_dataset_path, normalize, compute_stats_from)
         
         # Initialize checkpoint manager with process-specific prefix
         checkpoint_manager = CheckpointManager(
-            self.dirs['checkpoints'] if self.output_dir else './checkpoints',
+            ckpt_dir,
             prefix=f'{self.process_name}_grid_dataset'
         )
         
@@ -520,15 +528,15 @@ class DatasetBuilder:
             if start_idx >= n_samples:
                 print("Dataset già completo!")
                 return self._process_completed_dataset(
-                    all_theta, all_iv, normalize, compute_stats_from
+                    all_theta, all_iv, normalize, compute_stats_from, split=split
                 )
         
         # Generate only the missing thetas
         remaining_samples = n_samples - start_idx
         if remaining_samples <= 0:
             return self._process_completed_dataset(
-                all_theta, all_iv, normalize, compute_stats_from
-            )
+                    all_theta, all_iv, normalize, compute_stats_from, split=split
+                )
         
         print(f"\nGenerating {remaining_samples} theta samples for {self.process.__class__.__name__}...")
         thetas = self.sample_theta_lhs(remaining_samples)
@@ -552,7 +560,7 @@ class DatasetBuilder:
             # Batch process with mixed precision
             iv_batch = []
             with torch.cuda.amp.autocast(enabled=mixed_precision and self.device.type == 'cuda'):
-                for theta in tqdm(batch_thetas, desc=f"Computing {process_name} IV grids"):
+                for theta in tqdm(batch_thetas, desc=f"Computing {self.process_name} IV grids"):
                     try:
                         iv_grid = pricer._mc_iv_grid(
                             theta, 
@@ -620,9 +628,8 @@ class DatasetBuilder:
         
         # Processa dataset completo
         return self._process_completed_dataset(
-            all_theta, all_iv, normalize, compute_stats_from,
-            cleanup_checkpoints=True
-        )
+                    all_theta, all_iv, normalize, compute_stats_from, split=split
+                )
     
     def _get_process_default_volatility(self, theta: torch.Tensor) -> float:
         """
@@ -683,8 +690,17 @@ class DatasetBuilder:
         return theta_tensor, iv_tensor
     
     def _process_completed_dataset(self, theta_list, iv_list, normalize, 
-                                 compute_stats_from, cleanup_checkpoints=False):
+                                   compute_stats_from, cleanup_checkpoints=False,
+                                   split: str = 'train'):
         """Processa dataset completo: conversione, normalizzazione, salvataggio"""
+        # Cartelle per split
+        split = split.lower()
+        assert split in ('train', 'val')
+        ds_dir = (os.path.join(self.dirs['datasets'], split)
+                  if self.output_dir else os.path.join('./datasets', split))
+        ckpt_dir = (os.path.join(self.dirs['checkpoints'], split)
+                    if self.output_dir else os.path.join('./checkpoints', split))
+        os.makedirs(ds_dir, exist_ok=True); os.makedirs(ckpt_dir, exist_ok=True)
         # Converti a tensori
         print("\nConverting to tensors...")
         theta_tensor = torch.stack(theta_list).to(self.device)
@@ -693,27 +709,25 @@ class DatasetBuilder:
         print(f"Dataset shape - Theta: {theta_tensor.shape}, IV: {iv_tensor.shape}")
         
         # Salva dataset raw se abbiamo output_dir
-        if self.output_dir:
-            final_data = {
-                'theta': theta_tensor.cpu(),
-                'iv': iv_tensor.cpu(),
-                'process': self.process.__class__.__name__,
-                'timestamp': datetime.now().isoformat()
-            }
-            final_path = f"{self.dirs['datasets']}/{self.process_name}_grid_dataset_final.pkl"
-            with open(final_path, 'wb') as f:
-                pickle.dump(final_data, f)
-            print(f"✓ Raw dataset saved: {final_path}")
-            
-            # Cleanup checkpoints
-            if cleanup_checkpoints:
-                checkpoint_dir = self.dirs['checkpoints']
-                prefix = f"{self.process_name}_grid_dataset_checkpoint_"
-                checkpoints = [f for f in os.listdir(checkpoint_dir)
-                               if f.startswith(prefix) and f.endswith('.pkl')]
-                for cp in checkpoints:
-                    os.remove(f"{checkpoint_dir}/{cp}")
-                print(f"✓ Removed {len(checkpoints)} checkpoint files")
+        final_data = {
+            'theta': theta_tensor.cpu(),
+            'iv': iv_tensor.cpu(),
+            'process': self.process.__class__.__name__,
+            'timestamp': datetime.now().isoformat()
+        }
+        final_path = f"{ds_dir}/{self.process_name}_grid_dataset_final.pkl"
+        with open(final_path, 'wb') as f:
+            pickle.dump(final_data, f)
+        print(f"✓ Raw dataset saved: {final_path}")
+        
+        # Cleanup checkpoints
+        if cleanup_checkpoints:
+            prefix = f"{self.process_name}_grid_dataset_checkpoint_"
+            removed = 0
+            for cp in os.listdir(ckpt_dir):
+                if cp.startswith(prefix) and cp.endswith('.pkl'):
+                    os.remove(os.path.join(ckpt_dir, cp)); removed += 1
+            print(f"✓ Removed {removed} checkpoint files from {ckpt_dir}")
         
         # Normalizzazione
         if normalize:
@@ -736,21 +750,19 @@ class DatasetBuilder:
             theta_norm = self.normalize_theta(theta_tensor)
             iv_norm = self.normalize_iv(iv_tensor)
             
-            # Salva dataset normalizzato
-            if self.output_dir:
-                norm_data = {
-                    'theta_norm': theta_norm.cpu(),
-                    'iv_norm': iv_norm.cpu(),
-                    'theta_mean': self.theta_mean.cpu(),
-                    'theta_std': self.theta_std.cpu(),
-                    'iv_mean': self.iv_mean.cpu(),
-                    'iv_std': self.iv_std.cpu(),
-                    'timestamp': datetime.now().isoformat()
-                }
-                norm_path = f"{self.dirs['datasets']}/{self.process_name}_grid_dataset_normalized.pkl"
-                with open(norm_path, 'wb') as f:
-                    pickle.dump(norm_data, f)
-                print(f"✓ Normalized dataset saved: {norm_path}")
+            norm_data = {
+                'theta_norm': theta_norm.cpu(),
+                'iv_norm': iv_norm.cpu(),
+                'theta_mean': self.theta_mean.cpu(),
+                'theta_std': self.theta_std.cpu(),
+                'iv_mean': self.iv_mean.cpu(),
+                'iv_std': self.iv_std.cpu(),
+                'timestamp': datetime.now().isoformat()
+            }
+            norm_path = f"{ds_dir}/{self.process_name}_grid_dataset_normalized.pkl"
+            with open(norm_path, 'wb') as f:
+                pickle.dump(norm_data, f)
+            print(f"✓ Normalized dataset saved: {norm_path}")
             
             return theta_norm, iv_norm
         
@@ -872,11 +884,21 @@ class DatasetBuilder:
                                      checkpoint_every=5, show_progress=True,
                                      normalize=True, compute_stats_from=None,
                                      resume_from=None, mixed_precision=True,
-                                     chunk_size: int = None):
+                                     chunk_size: int = None,
+                                     split: str = 'train'):
         """
         Versione ottimizzata per Colab del build_pointwise_dataset.
         Aggiornata per processi generici.
         """
+        # --- split dirs (train/val) ---
+        split = split.lower()
+        assert split in ('train', 'val'), "split must be 'train' or 'val'"
+        ds_dir = (os.path.join(self.dirs['datasets'], split) 
+                  if self.output_dir else os.path.join('./datasets', split))
+        ckpt_dir = (os.path.join(self.dirs['checkpoints'], split) 
+                    if self.output_dir else os.path.join('./checkpoints', split))
+        os.makedirs(ds_dir, exist_ok=True); os.makedirs(ckpt_dir, exist_ok=True)
+
         n_theta = len(thetas)
         n_T = len(maturities)
         n_K = len(logK)
@@ -884,7 +906,7 @@ class DatasetBuilder:
         
         # Check se esiste già il dataset finale
         if self.output_dir:
-            final_dataset_path = f"{self.dirs['datasets']}/{self.process_name}_pointwise_dataset_final.pkl"
+            final_dataset_path = f"{ds_dir}/{self.process_name}_pointwise_dataset_final.pkl"
             if os.path.exists(final_dataset_path) and not resume_from:
                 print(f"✓ Dataset finale già esistente per {self.process.__class__.__name__}!")
                 return self._load_final_pointwise_dataset(
@@ -892,10 +914,7 @@ class DatasetBuilder:
                 )
         
         # Inizializza checkpoint manager
-        checkpoint_manager = CheckpointManager(
-            self.dirs['checkpoints'] if self.output_dir else './checkpoints',
-            prefix=f'{self.process_name}_pointwise_dataset'
-        )
+        checkpoint_manager = CheckpointManager(ckpt_dir, prefix=f'{self.process_name}_pointwise_dataset')
         
         # Resume da checkpoint se disponibile
         start_idx = 0
@@ -911,9 +930,21 @@ class DatasetBuilder:
             if start_idx >= n_theta:
                 print("Dataset già completo!")
                 return self._process_completed_pointwise_dataset(
-                    all_data, normalize, compute_stats_from
+                    all_data, normalize, compute_stats_from, split=split
                 )
-        
+        elif resume_from is None:
+            # Auto-resume: ultimo checkpoint pointwise nello split corrente
+            pref = f"{self.process_name}_pointwise_dataset_checkpoint_"
+            cand = sorted([f for f in os.listdir(ckpt_dir)
+                           if f.startswith(pref) and f.endswith(".pkl")])
+            if cand:
+                resume_from = os.path.join(ckpt_dir, cand[-1])
+                print(f"Resuming from latest checkpoint [{split}]: {os.path.basename(resume_from)}")
+                checkpoint = self._load_checkpoint(resume_from)
+                all_data = checkpoint['data']
+                start_idx = checkpoint.get('n_theta_done', 0)
+                print(f"Resuming from theta {start_idx}/{n_theta}")
+
         # Process remaining thetas
         remaining_thetas = thetas[start_idx:]
         if show_progress:
@@ -932,7 +963,7 @@ class DatasetBuilder:
             batch_start_time = time.time()
             
             with torch.cuda.amp.autocast(enabled=mixed_precision and self.device.type == 'cuda'):
-                iterator = tqdm(batch_thetas, desc=f"Computing {process_name} IV grids") if show_progress else batch_thetas
+                iterator = tqdm(batch_thetas, desc=f"Computing {self.process_name} IV grids") if show_progress else batch_thetas
                 for theta in iterator:
                     try:
                         iv_grid = pricer._mc_iv_grid(
@@ -1001,11 +1032,12 @@ class DatasetBuilder:
                     gc.collect()
         
         return self._process_completed_pointwise_dataset(
-            all_data, normalize, compute_stats_from, cleanup_checkpoints=True
+            all_data, normalize, compute_stats_from, cleanup_checkpoints=True, split=split
         )
 
     def _process_completed_pointwise_dataset(self, all_data, normalize,
-                                           compute_stats_from, cleanup_checkpoints=False):
+                                           compute_stats_from, cleanup_checkpoints=False,
+                                           split: str = 'train'):
         """Processa dataset completo: conversione, normalizzazione, salvataggio"""
         print("\nConverting to tensors...")
         theta_tensor = torch.stack(all_data['theta']).to(self.device)
@@ -1016,6 +1048,15 @@ class DatasetBuilder:
         print(f"Dataset shape: {theta_tensor.shape[0]} points")
         print(f"Unique thetas: {len(torch.unique(theta_tensor, dim=0))}")
     
+        # cartelle per split
+        split = split.lower()
+        assert split in ('train','val')
+        ds_dir = (os.path.join(self.dirs['datasets'], split)
+                  if self.output_dir else os.path.join('./datasets', split))
+        ckpt_dir = (os.path.join(self.dirs['checkpoints'], split)
+                    if self.output_dir else os.path.join('./checkpoints', split))
+        os.makedirs(ds_dir, exist_ok=True); os.makedirs(ckpt_dir, exist_ok=True)
+
         if self.output_dir:
             final_data = {
                 'theta': theta_tensor.cpu(),
@@ -1024,20 +1065,19 @@ class DatasetBuilder:
                 'iv': iv_tensor.cpu(),
                 'timestamp': datetime.now().isoformat()
             }
-            final_path = f"{self.dirs['datasets']}/pointwise_dataset_final.pkl"
+            final_path = f"{ds_dir}/{self.process_name}_pointwise_dataset_final.pkl"
             with open(final_path, 'wb') as f:
                 pickle.dump(final_data, f)
             print(f"✓ Raw dataset saved: {final_path}")
             
             if cleanup_checkpoints:
-                checkpoint_dir = self.dirs['checkpoints']
-                # FIX: Cerca i checkpoint con il pattern corretto
-                checkpoints = [f for f in os.listdir(checkpoint_dir) 
-                              if f.startswith('checkpoint_') and f.endswith('.pkl')]
-                for cp in checkpoints:
-                    os.remove(f"{checkpoint_dir}/{cp}")
-                if checkpoints:
-                    print(f"✓ Removed {len(checkpoints)} checkpoint files")
+                prefix = f"{self.process_name}_pointwise_dataset_checkpoint_"
+                removed = 0
+                for cp in os.listdir(ckpt_dir):
+                    if cp.startswith(prefix) and cp.endswith('.pkl'):
+                        os.remove(os.path.join(ckpt_dir, cp)); removed += 1
+                if removed:
+                    print(f"✓ Removed {removed} checkpoint files from {ckpt_dir}")
     
         if normalize:
             if compute_stats_from is None:
@@ -1070,7 +1110,7 @@ class DatasetBuilder:
                     'iv_std': self.iv_std.cpu(),
                     'timestamp': datetime.now().isoformat()
                 }
-                norm_path = f"{self.dirs['datasets']}/pointwise_dataset_normalized.pkl"
+                norm_path = f"{ds_dir}/{self.process_name}_pointwise_dataset_normalized.pkl"
                 with open(norm_path, 'wb') as f:
                     pickle.dump(norm_data, f)
                 print(f"✓ Normalized dataset saved: {norm_path}")
@@ -1332,8 +1372,8 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
             process_name = self.process.__class__.__name__.lower()
             self.regime_dirs = {
                 'short': f"{self.output_dir}/datasets/{process_name}_short_term",
-                'mid': f"{self.output_dir}/datasets/{process_name}_mid_term",
-                'long': f"{self.output_dir}/datasets/{process_name}_long_term",
+                'mid':   f"{self.output_dir}/datasets/{process_name}_mid_term",
+                'long':  f"{self.output_dir}/datasets/{process_name}_long_term",
                 'unified': f"{self.output_dir}/datasets/{process_name}_unified"
             }
             for dir_path in self.regime_dirs.values():
@@ -1348,21 +1388,23 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
             self.dataset_type = "val"
         assert self.dataset_type in ("train", "val"), "dataset_type deve essere 'train' o 'val'"
 
-        # Aggiungi sottocartelle per fase (train/val)
-        # Assumiamo che self.dirs e self.regime_dirs siano già creati prima
+        # Aggiungi sottocartelle per fase (train/val) a tutte le dir di output
         if self.output_dir:
             # checkpoints/<phase>
             self.dirs['checkpoints'] = os.path.join(self.dirs['checkpoints'], self.dataset_type)
             os.makedirs(self.dirs['checkpoints'], exist_ok=True)
-            # unified/<phase>
-            self.regime_dirs['unified'] = os.path.join(self.regime_dirs['unified'], self.dataset_type)
-            os.makedirs(self.regime_dirs['unified'], exist_ok=True)
+            # regime dirs /<phase>
+            for k in ['short','mid','long','unified']:
+                self.regime_dirs[k] = os.path.join(self.regime_dirs[k], self.dataset_type)
+                os.makedirs(self.regime_dirs[k], exist_ok=True)
         else:
             # fallback locale
             self.dirs['checkpoints'] = os.path.join("./checkpoints", self.dataset_type)
             os.makedirs(self.dirs['checkpoints'], exist_ok=True)
-            self.regime_dirs['unified'] = os.path.join("./unified", self.dataset_type)
-            os.makedirs(self.regime_dirs['unified'], exist_ok=True)
+            for k in ['short','mid','long','unified']:
+                base = f"./{k}" if k != 'unified' else "./unified"
+                self.regime_dirs[k] = os.path.join(base, self.dataset_type)
+                os.makedirs(self.regime_dirs[k], exist_ok=True)
     
     def compute_regime_normalization_stats(self, thetas, iv_short, iv_mid, iv_long):
         """
@@ -1452,7 +1494,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         # Checkpoint manager separato per phase
         checkpoint_manager = CheckpointManager(
             self.dirs['checkpoints'] if self.output_dir else './checkpoints',
-            prefix=f'multi_regime_{phase}',
+            prefix=f'{self.process_name}_multi_regime',
             keep_last_n=9
         )
 
@@ -1585,7 +1627,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                         'current_regime': regime,
                         'timestamp': datetime.now().isoformat()
                     }
-                    checkpoint_name = f"multi_regime_{phase}_checkpoint_{regime}_{n_done_reg}.pkl"
+                    checkpoint_name = f"{checkpoint_manager.prefix}_checkpoint_{regime}_{n_done_reg}.pkl"
                     checkpoint_manager.save_checkpoint(checkpoint_data, checkpoint_name)
 
                 if self.device.type == 'cuda':
@@ -1601,7 +1643,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                 'current_regime': regime,
                 'timestamp': datetime.now().isoformat()
             }
-            checkpoint_name = f"multi_regime_{phase}_checkpoint_{regime}_{n_done_reg}.pkl"
+            checkpoint_name = f"{checkpoint_manager.prefix}_checkpoint_{regime}_{n_done_reg}.pkl"
             checkpoint_manager.save_checkpoint(checkpoint_data, checkpoint_name)
 
         # Tutti i regimi dovrebbero essere completi ora
@@ -1661,11 +1703,13 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
 
             # Cleanup checkpoint files: tieni l'ultimo per ogni regime nella phase corrente
             if cleanup_checkpoints:
-                checkpoint_dir = self.dirs['checkpoints']  # già include /train o /val se hai settato in __init__
+                checkpoint_dir = self.dirs['checkpoints']  # qui c'è già /train o /val
                 files = [f for f in os.listdir(checkpoint_dir)
-                        if f.startswith(f"multi_regime_{phase}_checkpoint_") and f.endswith('.pkl')]
+                        if f.startswith(f"{self.process_name}_multi_regime_checkpoint_") and f.endswith('.pkl')]
 
-                rx = re.compile(rf"multi_regime_{phase}_checkpoint_(short|mid|long)_(\d+)\.pkl$")
+                rx = re.compile(
+                    rf"{re.escape(self.process_name)}_multi_regime_checkpoint_(short|mid|long)_(\d+)\.pkl$"
+                )
                 latest = {}
                 for f in files:
                     m = rx.match(f)
@@ -1907,20 +1951,17 @@ class CheckpointManager:
         return None
     
     def _list_multi_regime_checkpoints(self):
-        base = self.checkpoint_dir
         return [
-            os.path.join(base, f) for f in os.listdir(base)
-            if f.startswith('multi_regime_checkpoint_') and f.endswith('.pkl')
+            os.path.join(self.checkpoint_dir, f)
+            for f in os.listdir(self.checkpoint_dir)
+            if f.startswith(self.prefix + "_checkpoint_") and f.endswith(".pkl")
         ]
 
     def find_latest_per_regime(self):
-        """
-        Restituisce il path dell'ultimo checkpoint per ciascun regime
-        in base al numero alla fine del nome (…_{N}.pkl).
-        """
-        import re
-        latest = {}  # { 'short': (N, path), 'mid': (N, path), 'long': (N, path) }
-        rx = re.compile(r"multi_regime_checkpoint_(short|mid|long)_(\d+)\.pkl$")
+        """Return last checkpoint per regime using current prefix (e.g. multi_regime_train/val)."""
+        import re, os
+        rx = re.compile(rf"{re.escape(self.prefix)}_checkpoint_(short|mid|long)_(\d+)\.pkl$")
+        latest = {}
         for p in self._list_multi_regime_checkpoints():
             m = rx.search(os.path.basename(p))
             if not m:
@@ -1928,7 +1969,6 @@ class CheckpointManager:
             reg, n = m.group(1), int(m.group(2))
             if (reg not in latest) or (n > latest[reg][0]):
                 latest[reg] = (n, p)
-        # ritorna solo i path
         return {reg: path for reg, (n, path) in latest.items()}
 
     
