@@ -530,7 +530,18 @@ class DatasetBuilder:
                 return self._process_completed_dataset(
                     all_theta, all_iv, normalize, compute_stats_from, split=split
                 )
-        
+        elif resume_from is None:
+            pref = f"{self.process_name}_grid_dataset_checkpoint_"
+            cand = sorted([f for f in os.listdir(ckpt_dir)
+                        if f.startswith(pref) and f.endswith(".pkl")])
+            if cand:
+                resume_from = os.path.join(ckpt_dir, cand[-1])
+                print(f"Resuming from latest checkpoint [{split}]: {os.path.basename(resume_from)}")
+                checkpoint = self._load_checkpoint(resume_from)
+                all_theta = checkpoint['theta_list']; all_iv = checkpoint['iv_list']
+                start_idx = len(all_theta)
+                print(f"Resuming from sample {start_idx}/{n_samples}")
+
         # Generate only the missing thetas
         remaining_samples = n_samples - start_idx
         if remaining_samples <= 0:
@@ -1530,9 +1541,21 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                     all_data[r]['theta'] = best[r][1][r]['theta']
                     all_data[r]['iv']    = best[r][1][r]['iv']
 
+        # Target per-regime: int (uguale per tutti) | dict | tuple/list
+        if isinstance(n_samples, dict):
+            targets = {
+                'short': int(n_samples.get('short', 0)),
+                'mid':   int(n_samples.get('mid',   0)),
+                'long':  int(n_samples.get('long',  0)),
+            }
+        elif isinstance(n_samples, (tuple, list)) and len(n_samples) == 3:
+            targets = {'short': int(n_samples[0]), 'mid': int(n_samples[1]), 'long': int(n_samples[2])}
+        else:
+            targets = {'short': int(n_samples), 'mid': int(n_samples), 'long': int(n_samples)}
+
         # Calcola progresso e rimanenti per-regime
         done = {reg: len(all_data[reg]['theta']) for reg in ['short','mid','long']}
-        remaining = {reg: max(0, n_samples - done[reg]) for reg in ['short','mid','long']}
+        remaining = {reg: max(0, targets[reg] - done[reg]) for reg in ['short','mid','long']}
 
         if all(v == 0 for v in remaining.values()):
             print("Dataset già completo!")
@@ -1565,7 +1588,8 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                 continue
 
             print(f"\n{'='*50}")
-            print(f"Processing {regime.upper()} TERM regime")
+            print(f"Processing {regime.upper()} TERM regime "
+                  f"[target={targets[regime]}, done={done[regime]}, remaining={remaining[regime]}]")
             print(f"{'='*50}")
 
             regime_thetas = theta_dict[regime]
@@ -1729,8 +1753,8 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         # Normalizzazione (opzionale; attenzione al data leakage a monte)
         if normalize:
             if compute_stats_from is None:
-                # Calcola nuove statistiche (theta condivisi: prendi 'short' per coerenza)
-                theta_all = datasets['short']['theta']
+                # Calcola nuove statistiche: usa TUTTI i theta concatenati (robusto a taglie diverse)
+                theta_all = torch.cat([datasets[r]['theta'] for r in ['short','mid','long']], dim=0)
                 self.compute_regime_normalization_stats(
                     theta_all,
                     datasets['short']['iv'],
@@ -1799,8 +1823,8 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         
         if normalize:
             if compute_stats_from is None:
-                # Calcola statistiche
-                theta_all = datasets['short']['theta']
+                # Calcola statistiche: usa TUTTI i theta concatenati
+                theta_all = torch.cat([datasets[r]['theta'] for r in ['short','mid','long']], dim=0)
                 self.compute_regime_normalization_stats(
                     theta_all,
                     datasets['short']['iv'],
@@ -1837,30 +1861,31 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         """
         torch.manual_seed(seed)
         
-        # Assumiamo che tutti i regimi abbiano lo stesso numero di samples
-        n_samples = len(datasets['short']['theta'])
-        n_train = int(n_samples * train_ratio)
-        
-        # Genera indici shuffled
-        indices = torch.randperm(n_samples)
-        train_indices = indices[:n_train]
-        val_indices = indices[n_train:]
-        
-        # Split datasets
-        train_datasets = {}
-        val_datasets = {}
-        
-        for regime in ['short', 'mid', 'long']:
-            train_datasets[regime] = {
-                'theta': datasets[regime]['theta'][train_indices],
-                'iv': datasets[regime]['iv'][train_indices]
-            }
-            val_datasets[regime] = {
-                'theta': datasets[regime]['theta'][val_indices],
-                'iv': datasets[regime]['iv'][val_indices]
-            }
-        
-        print(f"Split dataset: {n_train} train, {n_samples - n_train} validation")
+        # Se le taglie coincidono, manteniamo lo split "coerente" tra regimi; altrimenti split per-regime.
+        sizes = {r: len(datasets[r]['theta']) for r in ['short','mid','long']}
+        same_size = len(set(sizes.values())) == 1
+
+        train_datasets, val_datasets = {}, {}
+        if same_size:
+            n = next(iter(sizes.values()))
+            n_train = int(n * train_ratio)
+            idx = torch.randperm(n)
+            tr, va = idx[:n_train], idx[n_train:]
+            for r in ['short','mid','long']:
+                train_datasets[r] = {'theta': datasets[r]['theta'][tr], 'iv': datasets[r]['iv'][tr]}
+                val_datasets[r]   = {'theta': datasets[r]['theta'][va], 'iv': datasets[r]['iv'][va]}
+            print(f"Split dataset (coupled): {n_train} train, {n - n_train} validation per regime")
+        else:
+            print("Warning: regime sizes differ; performing per-regime split.")
+            for r in ['short','mid','long']:
+                n = sizes[r]
+                n_train = int(n * train_ratio)
+                idx = torch.randperm(n)
+                tr, va = idx[:n_train], idx[n_train:]
+                train_datasets[r] = {'theta': datasets[r]['theta'][tr], 'iv': datasets[r]['iv'][tr]}
+                val_datasets[r]   = {'theta': datasets[r]['theta'][va], 'iv': datasets[r]['iv'][va]}
+            print("Split dataset: per-regime counts:",
+                  {r: (len(train_datasets[r]['theta']), len(val_datasets[r]['theta'])) for r in ['short','mid','long']})
         
         return train_datasets, val_datasets
     
@@ -1902,20 +1927,6 @@ class CheckpointManager:
             for f in os.listdir(self.checkpoint_dir)
             if f.startswith(self.prefix + "_checkpoint_") and f.endswith(".pkl")
         ]
-
-    # Trova l'ultimo checkpoint per ciascun regime (short/mid/long) filtrando per prefix (quindi per phase)
-    def find_latest_per_regime(self):
-        import re, os
-        rx = re.compile(rf"{re.escape(self.prefix)}_checkpoint_(short|mid|long)_(\d+)\.pkl$")
-        latest = {}
-        for p in self._list_checkpoints():
-            m = rx.search(os.path.basename(p))
-            if not m:
-                continue
-            reg, n = m.group(1), int(m.group(2))
-            if (reg not in latest) or (n > latest[reg][0]):
-                latest[reg] = (n, p)
-        return {reg: path for reg, (n, path) in latest.items()}
     
     def find_latest(self):
         """Trova l'ultimo checkpoint disponibile"""
