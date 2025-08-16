@@ -1399,20 +1399,91 @@ class DatasetBuilder:
         
         return theta_pw, T_pw, k_pw, iv_pw
 
-    def build_random_smiles_dataset(self, n_smiles: int = 50000, n_strikes_per_smile: int = 13,
-                                    n_paths: int = 30000, spot: float = 1.0, normalize: bool = True,
-                                    compute_stats_from=None, show_progress: bool = True):
-        """Light variant: a random T for each theta"""
-        print(f"\nBuilding Random Smiles Dataset: {n_smiles} × {n_strikes_per_smile}")
-        mc_params = self.get_process_specific_mc_params(base_n_paths=n_paths)
-        thetas = self.sample_theta_lhs(n_smiles)
-        all_theta, all_T, all_k, all_iv = [], [], [], []
+    def build_random_smiles_dataset(self,
+                                    n_smiles: int = 50000,
+                                    n_strikes_per_smile: int = 13,
+                                    n_paths: int = 30000,
+                                    spot: float = 1.0,
+                                    normalize: bool = True,
+                                    compute_stats_from=None,
+                                    show_progress: bool = True,
+                                    checkpoint_every: int = 100,
+                                    resume_from: str | None = None,
+                                    base_seed: int = 42,
+                                    split: str | None = None,
+                                    save_all_thetas: bool = True):
+        """
+        Light variant: a random T for each theta (now with checkpoint + resume).
+        Checkpoint path: <output_dir>/checkpoints/random_smiles/<train|val>/<proc>_smiles_checkpoint_<N>.pkl
+        """
+        # ----------------------------
+        # Setup checkpoint directory
+        # ----------------------------
+        split = (split or getattr(self, 'dataset_type', 'val')).lower()
+        assert split in ('train', 'val'), "split must be 'train' or 'val'"
+        base_ckpt = (self.dirs['checkpoints'] if getattr(self, 'dirs', None) and 'checkpoints' in self.dirs
+                     else (os.path.join(self.output_dir, 'checkpoints') if self.output_dir else './checkpoints'))
+        checkpoint_dir = os.path.join(base_ckpt, 'random_smiles', split)
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        proc_slug = getattr(self.process.__class__, "__name__", "process").lower()
 
-        iterator = range(n_smiles)
+        # State
+        start_idx = 0
+        all_theta, all_T, all_k, all_iv = [], [], [], []
+        thetas_total = None
+
+        # ----------------------------
+        # Resolve 'latest' resume
+        # ----------------------------
+        if resume_from == 'latest':
+            pattern = rf'^{proc_slug}_smiles_checkpoint_(\d+)(?:\.pkl)?$'
+            cands = [f for f in os.listdir(checkpoint_dir) if re.match(pattern, f)]
+            # fallback: also search in the parent (without split) if empty
+            if not cands:
+                parent_dir = os.path.dirname(checkpoint_dir)  # .../random_smiles
+                if os.path.isdir(parent_dir):
+                    cands = [f for f in os.listdir(parent_dir) if re.match(pattern, f)]
+                    if cands:
+                        cands.sort(key=lambda n: int(re.match(pattern, n).group(1)))
+                        resume_from = os.path.join(parent_dir, cands[-1])
+            if cands:
+                cands.sort(key=lambda n: int(re.match(pattern, n).group(1)))
+                resume_from = os.path.join(checkpoint_dir, cands[-1])
+
+        # ----------------------------
+        # Load checkpoint if provided
+        # ----------------------------
+        if resume_from and os.path.exists(resume_from):
+            print(f"\nResuming Random Smiles from checkpoint: {resume_from}")
+            with open(resume_from, 'rb') as f:
+                checkpoint = pickle.load(f)
+            all_theta = [t.cpu() for t in checkpoint.get('theta', [])]
+            all_T     = [t.cpu() for t in checkpoint.get('T', [])]
+            all_k     = [t.cpu() for t in checkpoint.get('k', [])]
+            all_iv    = [t.cpu() for t in checkpoint.get('iv', [])]
+            if save_all_thetas and ('thetas_total' in checkpoint) and isinstance(checkpoint['thetas_total'], torch.Tensor):
+                thetas_total = checkpoint['thetas_total'].cpu()
+            start_idx = int(checkpoint.get('n_smiles_done', 0))
+            if start_idx >= n_smiles:
+                print("Random Smiles dataset already complete!")
+                return self._finalize_random_grids_dataset(all_theta, all_T, all_k, all_iv,
+                                                           normalize, compute_stats_from)
+
+        print(f"\nBuilding Random Smiles Dataset: {n_smiles} × {n_strikes_per_smile}")
+        print(f"Starting from smile {start_idx} [{split}]")
+        mc_params = self.get_process_specific_mc_params(base_n_paths=n_paths)
+
+        # Pre-sample deterministic LHS for reproducibility (and resume)
+        if thetas_total is None:
+            thetas_total = self.sample_theta_lhs(n_smiles, seed=base_seed).cpu()
+        thetas = thetas_total[start_idx:].to(self.device)
+
+        iterator = range(start_idx, n_smiles)
         if show_progress:
             try:
                 from tqdm import tqdm
-                iterator = tqdm(iterator, desc="Generating random smiles")
+                iterator = tqdm(iterator, desc="Generating random smiles",
+                                initial=start_idx, total=n_smiles)
             except Exception:
                 pass
 
@@ -1422,6 +1493,8 @@ class DatasetBuilder:
             T_t = torch.tensor(T, dtype=torch.float32, device=self.device)
             strikes = self._sample_random_strikes(T, spot, n_strikes_per_smile)
             logK = torch.log(strikes / spot)
+            # theta corrente
+            theta = thetas[i - start_idx]
             pricer = GridNetworkPricer(
                 maturities=T_t.unsqueeze(0),
                 logK=logK,
@@ -1432,7 +1505,7 @@ class DatasetBuilder:
                 smile_repair_method='pchip'
             )
             iv_smile = pricer._mc_iv_grid(
-                theta=thetas[i],
+                theta=theta,
                 n_paths=mc_params.get('n_paths', 30000),
                 spot=spot,
                 use_antithetic=mc_params.get('use_antithetic', True),
@@ -1441,25 +1514,44 @@ class DatasetBuilder:
                 control_variate=mc_params.get('control_variate', True)
             ).squeeze(0)
 
-            all_theta.extend([thetas[i]] * len(strikes))
-            all_T.extend([T_t] * len(strikes))
-            all_k.extend(list(logK))
-            all_iv.extend(list(iv_smile))
+            # Accumulate on CPU for portable checkpoints
+            theta_cpu  = theta.detach().cpu()
+            T_cpu      = T_t.detach().cpu()
+            logK_cpu   = logK.detach().cpu()
+            iv_cpu     = iv_smile.detach().cpu()
+            all_theta.extend([theta_cpu] * len(strikes))
+            all_T.extend([T_cpu] * len(strikes))
+            all_k.extend(list(logK_cpu))
+            all_iv.extend(list(iv_cpu))
+
+            # ----------------------------
+            # Periodic checkpoint
+            # ----------------------------
+            smiles_done = (i + 1)
+            if checkpoint_every and (smiles_done % checkpoint_every == 0):
+                ckpt_path = os.path.join(
+                    checkpoint_dir, f"{proc_slug}_smiles_checkpoint_{smiles_done}.pkl"
+                )
+                tmp = {
+                    'theta': all_theta,
+                    'T': all_T,
+                    'k': all_k,
+                    'iv': all_iv,
+                    'n_smiles_done': smiles_done,
+                }
+                if save_all_thetas and isinstance(thetas_total, torch.Tensor):
+                    tmp['thetas_total'] = thetas_total
+                with open(ckpt_path, 'wb') as f:
+                    pickle.dump(tmp, f)
+                print(f"[checkpoint] Saved: {ckpt_path}")
 
             if (i + 1) % 100 == 0 and self.device.type == 'cuda':
                 torch.cuda.empty_cache()
 
         theta_pw = torch.stack(all_theta); T_pw = torch.stack(all_T)
         k_pw = torch.stack(all_k); iv_pw = torch.stack(all_iv)
-        if normalize:
-            if compute_stats_from is None:
-                self.compute_normalization_stats(theta_pw, iv_pw, T_pw, k_pw)
-                self.save_normalization_stats()
-            else:
-                self._copy_stats_from(compute_stats_from)
-            return (self.normalize_theta(theta_pw), self.normalize_T(T_pw),
-                    self.normalize_k(k_pw), self.normalize_iv(iv_pw))
-        return theta_pw, T_pw, k_pw, iv_pw
+        return self._finalize_random_grids_dataset(all_theta, all_T, all_k, all_iv,
+                                                   normalize, compute_stats_from)
     
 class MultiRegimeDatasetBuilder(DatasetBuilder):
     """

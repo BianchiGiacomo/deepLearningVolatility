@@ -101,3 +101,7 @@ class VasicekProcess(BaseStochasticProcess):
 
 # Registra il processo
 ProcessFactory.register('vasicek', VasicekProcess)
+ProcessFactory.register(
+    'vasicek', VasicekProcess,
+    aliases=['vasicek_process', 'vasicekprocess']
+)

@@ -144,3 +144,7 @@ class RoughBergomiProcess(BaseStochasticProcess):
 # Registra il processo nel factory
 ProcessFactory.register('rough_bergomi', RoughBergomiProcess)
 ProcessFactory.register('roughbergomi', RoughBergomiProcess)  # Alias
+ProcessFactory.register(
+    'rough_bergomi', RoughBergomiProcess,
+    aliases=['roughbergomi', 'rough-bergomi', 'rough_bergomi_process', 'roughbergomiprocess']
+)
