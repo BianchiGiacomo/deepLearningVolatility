@@ -1270,7 +1270,7 @@ class DatasetBuilder:
         
         if resume_from == 'latest':
             # Find the last checkpoint of the current process (numeric sort order)
-            pattern = rf'^{proc_slug}_pointwise_checkpoint_long_(\d+)(?:\.pkl)?$'
+            pattern = rf'^{proc_slug}_pointwise_checkpoint_(\d+)(?:\.pkl)?$'
             cands = [f for f in os.listdir(checkpoint_dir) if re.match(pattern, f)]
             def _idx(name):
                 m = re.match(pattern, name)
@@ -1347,8 +1347,8 @@ class DatasetBuilder:
                 checkpoint_path = f"{checkpoint_dir}/random_grids_checkpoint_{i+1}.pkl"
                 if save_all_thetas:
                     checkpoint_data['thetas_total'] = thetas_total
-                # File name: <processclass>_pointwise_checkpoint_long_<N>.pkl
-                checkpoint_path = f"{checkpoint_dir}/{proc_slug}_pointwise_checkpoint_long_{i+1}.pkl"
+                # File name: <processclass>_pointwise_checkpoint_<N>.pkl
+                checkpoint_path = f"{checkpoint_dir}/{proc_slug}_pointwise_checkpoint_{i+1}.pkl"
                 with open(checkpoint_path, 'wb') as f:
                     pickle.dump(checkpoint_data, f)
                 print(f"\n✓ Checkpoint saved: {i+1}/{n_surfaces} surfaces")
