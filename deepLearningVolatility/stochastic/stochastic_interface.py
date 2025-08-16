@@ -3,7 +3,7 @@ Interfaccia unificata per processi stocastici.
 Fornisce un'astrazione comune per diversi modelli di pricing.
 """
 from abc import ABC, abstractmethod
-from typing import Protocol, NamedTuple, Optional, Dict, Tuple, List, Any
+from typing import Protocol, NamedTuple, Optional, Dict, Tuple, List, Any, Iterable
 import torch
 from torch import Tensor
 
@@ -119,7 +119,7 @@ class StochasticProcess(Protocol):
             return torch.full((n_paths,), float('inf')), torch.zeros(n_paths, dtype=torch.bool)
         
         # Implementazione default (può essere sovrascritta)
-        from deepLearningVolatility.stochastic.pricer import ZeroAbsorptionHandler
+        from deepLearningVolatility.nn.pricer import ZeroAbsorptionHandler
         return ZeroAbsorptionHandler.find_absorption_times(paths, dt)
 
 
@@ -214,24 +214,53 @@ class BaseStochasticProcess(ABC):
 
 # Factory pattern per registrazione dinamica
 class ProcessFactory:
-    """Factory per la creazione di processi stocastici."""
-    _registry: Dict[str, type] = {}
-    
+    """Factory per la creazione di processi stocastici con supporto alias
+    e mappa inversa (classe -> chiave canonica).
+    """
+    _registry: Dict[str, type] = {}    # chiave canonica o alias -> classe
+    _reverse:  Dict[type, str] = {}    # classe -> chiave canonica
+
     @classmethod
-    def register(cls, name: str, process_class: type) -> None:
-        """Registra un nuovo processo."""
-        cls._registry[name.lower()] = process_class
-    
+    def register(cls, name: str, process_class: type, aliases: Iterable[str] = ()) -> None:
+        """Registra un nuovo processo.
+        - name: chiave canonica (es. 'rough_heston')
+        - aliases: chiavi alternative che puntano alla stessa classe
+        """
+        key = name.strip().lower()
+        cls._registry[key] = process_class
+        cls._reverse[process_class] = key
+        for a in aliases:
+            aka = a.strip().lower()
+            cls._registry[aka] = process_class  # tutti gli alias risolvono alla stessa classe
+
     @classmethod
-    def create(cls, name: str, **kwargs) -> StochasticProcess:
-        """Crea un'istanza del processo richiesto."""
-        process_class = cls._registry.get(name.lower())
+    def create(cls, name: str, **kwargs):
+        """Crea un'istanza del processo richiesto (chiave canonica o alias)."""
+        k = name.strip().lower()
+        process_class = cls._registry.get(k)
         if process_class is None:
             available = list(cls._registry.keys())
             raise ValueError(f"Unknown process '{name}'. Available: {available}")
-        return process_class(**kwargs)
-    
+        inst = process_class(**kwargs)
+        # memorizza la chiave canonica sull'istanza (utile per salvataggio config)
+        setattr(inst, "_factory_key", cls._reverse.get(process_class, k))
+        return inst
+
+    @classmethod
+    def key_for_class(cls, process_class: type) -> Optional[str]:
+        """Ritorna la chiave canonica per una classe registrata."""
+        return cls._reverse.get(process_class)
+
+    @classmethod
+    def key_for_instance(cls, proc) -> Optional[str]:
+        """Ritorna la chiave canonica per un'istanza (se nota)."""
+        # preferisci la chiave memorizzata in create(...)
+        k = getattr(proc, "_factory_key", None)
+        if k is not None:
+            return k
+        return cls._reverse.get(type(proc))
+
     @classmethod
     def list_available(cls) -> List[str]:
-        """Lista dei processi disponibili."""
+        """Lista delle chiavi registrate (incluse eventuali alias)."""
         return list(cls._registry.keys())

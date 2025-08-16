@@ -107,3 +107,8 @@ class CIRProcess(BaseStochasticProcess):
 # Registra il processo
 ProcessFactory.register('cir', CIRProcess)
 ProcessFactory.register('cox_ingersoll_ross', CIRProcess)  # Alias
+ProcessFactory.register(
+    'cir', CIRProcess,
+    aliases=['cir_process', 'cirprocess', 'cox_ingersoll_ross',
+             'cox-ingersoll-ross', 'coxingersollross']
+)

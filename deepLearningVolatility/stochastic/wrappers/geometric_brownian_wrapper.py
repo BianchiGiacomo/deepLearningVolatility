@@ -108,3 +108,8 @@ class GeometricBrownianProcess(BaseStochasticProcess):
 ProcessFactory.register('geometric_brownian', GeometricBrownianProcess)
 ProcessFactory.register('gbm', GeometricBrownianProcess)  # Alias
 ProcessFactory.register('black_scholes', GeometricBrownianProcess)  # Alias
+ProcessFactory.register(
+    'geometric_brownian', GeometricBrownianProcess,
+    aliases=['gbm', 'geometric-brownian', 'geometricbrownian',
+             'black_scholes', 'black-scholes', 'blackscholes']
+)

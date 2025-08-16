@@ -113,3 +113,7 @@ class HestonProcess(BaseStochasticProcess):
 
 # Registra il processo
 ProcessFactory.register('heston', HestonProcess)
+ProcessFactory.register(
+    'heston', HestonProcess,
+    aliases=['heston_process', 'hestonprocess']
+)

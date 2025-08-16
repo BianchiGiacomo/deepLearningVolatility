@@ -159,3 +159,8 @@ class RoughHestonProcess(BaseStochasticProcess):
 ProcessFactory.register('rough_heston', RoughHestonProcess)
 ProcessFactory.register('roughheston', RoughHestonProcess)  # Alias
 ProcessFactory.register('rough-heston', RoughHestonProcess)  # Alias
+ProcessFactory.register(
+    "rough_heston",
+    RoughHestonProcess,
+    aliases=["roughheston", "rough-heston", "rough_heston_process", "roughhestonprocess"]
+)
