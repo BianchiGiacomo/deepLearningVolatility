@@ -40,7 +40,7 @@ class DatasetBuilder:
     Dataset builder that supports any StochasticProcess.
     """
     
-    def __init__(self, process: Union[str, StochasticProcess], device='cpu', output_dir=None):
+    def __init__(self, process, device='cpu', output_dir=None, dataset_type: str = 'train', **kwargs):
         """
         Args:
             process: Name of the process or StochasticProcess instance
@@ -49,7 +49,10 @@ class DatasetBuilder:
         """
         self.device = torch.device(device)
         self.output_dir = output_dir
-        
+        dt = (dataset_type or 'train').lower()
+        assert dt in ('train', 'val'), "dataset_type must be 'train' or 'val'"
+        self.dataset_type = dt
+
         # Setup directories if output_dir is specified
         if self.output_dir:
             self.setup_directories()
@@ -1253,13 +1256,17 @@ class DatasetBuilder:
                                normalize: bool = True, compute_stats_from=None,
                                show_progress: bool = True, batch_size: int = 50,
                                checkpoint_every: int = 100, resume_from: str = None,
-                               save_all_thetas: bool = True, base_seed: int = 42):
+                               save_all_thetas: bool = True, base_seed: int = 42,
+                               split: str | None = None):
         """Build pointwise datasets with Random Grids approach"""
         
         # Setup checkpoint directory
-        checkpoint_dir = (f"{self.dirs['checkpoints']}/random_grids"
-                      if getattr(self, "dirs", None) else
-                      (f"{self.output_dir}/checkpoints/random_grids" if self.output_dir else "./checkpoints/random_grids"))
+        split = (split or getattr(self, 'dataset_type', 'train')).lower()
+        assert split in ('train','val'), "split must be 'train' or 'val'"
+        base_ckpt = (self.dirs['checkpoints'] if getattr(self, 'dirs', None) and 'checkpoints' in self.dirs
+                     else (os.path.join(self.output_dir, 'checkpoints') if self.output_dir else './checkpoints'))
+        checkpoint_dir = os.path.join(base_ckpt, 'random_grids', split)
+
         os.makedirs(checkpoint_dir, exist_ok=True)
         proc_slug = getattr(self.process.__class__, "__name__", "process").lower()
         # Check for existing checkpoint
@@ -1268,13 +1275,24 @@ class DatasetBuilder:
         thetas_total = None
         
         if resume_from == 'latest':
-            # Find the last checkpoint of the current process (numeric sort order)
+            # Cerca l'ultimo checkpoint nel sottocartella train/val (ordinamento numerico)
             pattern = rf'^{proc_slug}_pointwise_checkpoint_(\d+)(?:\.pkl)?$'
             cands = [f for f in os.listdir(checkpoint_dir) if re.match(pattern, f)]
-            def _idx(name):
-                m = re.match(pattern, name)
-                return int(m.group(1)) if m else -1
+            # fallback per compatibilità retro: cerca anche nel padre (senza split) se non trovi nulla
+            if not cands:
+                parent_dir = os.path.dirname(checkpoint_dir)  # .../random_grids
+                if os.path.isdir(parent_dir):
+                    cands = [f for f in os.listdir(parent_dir) if re.match(pattern, f)]
+                    if cands:
+                        cands.sort(key=lambda n: int(re.match(pattern, n).group(1)))
+                        resume_from = os.path.join(parent_dir, cands[-1])
+            if cands:
+                cands.sort(key=lambda n: int(re.match(pattern, n).group(1)))
+                resume_from = os.path.join(checkpoint_dir, cands[-1])
         
+            print(f"\nBuilding Random Grids Pointwise Dataset: {n_surfaces} × {n_maturities} × {n_strikes}")
+            print(f"Starting from surface {start_idx} [{split}]")
+
         if resume_from and os.path.exists(resume_from):
             print(f"Resuming from checkpoint: {resume_from}")
             with open(resume_from, 'rb') as f:
