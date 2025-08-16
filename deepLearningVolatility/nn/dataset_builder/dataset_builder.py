@@ -604,18 +604,18 @@ class DatasetBuilder:
                         )
                         iv_batch.append(iv_grid.cpu())
                     
-                    # Clear cache periodicamente
+                    # Clear cache periodically
                     if len(iv_batch) % 10 == 0 and self.device.type == 'cuda':
                         torch.cuda.empty_cache()
             
-            # Aggiungi a liste complete
+            # Add to complete lists
             all_theta.extend([t.cpu() for t in batch_thetas])
             all_iv.extend(iv_batch)
             
             batch_time = time.time() - batch_start_time
             print(f"✓ Batch completed in {batch_time:.1f}s")
             
-            # Checkpoint periodici
+            # Periodic checkpoints
             if ((batch_idx // batch_size + 1) % checkpoint_every == 0 or 
                 batch_end == len(thetas)):
                 
@@ -637,47 +637,47 @@ class DatasetBuilder:
                     torch.cuda.empty_cache()
                     gc.collect()
         
-        # Processa dataset completo
+        # Process complete dataset
         return self._process_completed_dataset(
                     all_theta, all_iv, normalize, compute_stats_from, split=split
                 )
     
     def _get_process_default_volatility(self, theta: torch.Tensor) -> float:
         """
-        Ottiene una volatilità di default basata sul processo e i parametri.
+        Gets a default volatility based on the process and parameters.
         """
         if hasattr(self.process, 'param_info'):
             param_info = self.process.param_info
             
-            # Cerca parametri volatilità-related nell'ordine di priorità
+            # Search for volatility-related parameters in priority order
             for vol_name in ['xi0', 'sigma', 'theta', 'vol']:
                 if vol_name in param_info.names:
                     idx = param_info.names.index(vol_name)
                     value = theta[idx].item()
                     
-                    # Per parametri di varianza, prendi sqrt
+                    # For variance parameters, take sqrt
                     if vol_name in ['xi0', 'theta']:
                         return math.sqrt(value)
                     else:
                         return value
             
-            # Se è un modello jump, usa sigma se presente
+            # If it's a jump model, use sigma if present
             if 'jump' in self.process.__class__.__name__.lower():
                 if 'sigma' in param_info.names:
                     idx = param_info.names.index('sigma')
                     return theta[idx].item()
         
-        # Default generale
+        # General default
         return 0.2
     
         
     def _load_checkpoint(self, checkpoint_path):
-        """Carica checkpoint con gestione errori"""
+        """Load checkpoint with error handling"""
         with open(checkpoint_path, 'rb') as f:
             return pickle.load(f)
         
     def _load_final_dataset(self, path, normalize, compute_stats_from):
-        """Carica dataset finale e applica normalizzazione se necessario"""
+        """Load final dataset and apply normalization if necessary"""
         with open(path, 'rb') as f:
             data = pickle.load(f)
         
@@ -686,14 +686,14 @@ class DatasetBuilder:
         
         if normalize:
             if compute_stats_from is None:
-                # Calcola statistiche
+                # Calculate statistics
                 self.compute_normalization_stats(theta_tensor, iv_tensor)
                 self.save_normalization_stats()
             else:
-                # Usa statistiche esistenti
+                # Use existing statistics
                 self._copy_stats_from(compute_stats_from)
             
-            # Normalizza
+            # Normalize
             theta_norm = self.normalize_theta(theta_tensor)
             iv_norm = self.normalize_iv(iv_tensor)
             return theta_norm, iv_norm
@@ -703,8 +703,8 @@ class DatasetBuilder:
     def _process_completed_dataset(self, theta_list, iv_list, normalize, 
                                    compute_stats_from, cleanup_checkpoints=False,
                                    split: str = 'train'):
-        """Processa dataset completo: conversione, normalizzazione, salvataggio"""
-        # Cartelle per split
+        """Process complete dataset: conversion, normalization, saving"""
+        # Split folders
         split = split.lower()
         assert split in ('train', 'val')
         ds_dir = (os.path.join(self.dirs['datasets'], split)
@@ -712,14 +712,14 @@ class DatasetBuilder:
         ckpt_dir = (os.path.join(self.dirs['checkpoints'], split)
                     if self.output_dir else os.path.join('./checkpoints', split))
         os.makedirs(ds_dir, exist_ok=True); os.makedirs(ckpt_dir, exist_ok=True)
-        # Converti a tensori
+        # Convert to tensors
         print("\nConverting to tensors...")
         theta_tensor = torch.stack(theta_list).to(self.device)
         iv_tensor = torch.stack(iv_list).to(self.device)
         
         print(f"Dataset shape - Theta: {theta_tensor.shape}, IV: {iv_tensor.shape}")
         
-        # Salva dataset raw se abbiamo output_dir
+        # Save raw dataset if we have output_dir
         final_data = {
             'theta': theta_tensor.cpu(),
             'iv': iv_tensor.cpu(),
@@ -740,10 +740,10 @@ class DatasetBuilder:
                     os.remove(os.path.join(ckpt_dir, cp)); removed += 1
             print(f"✓ Removed {removed} checkpoint files from {ckpt_dir}")
         
-        # Normalizzazione
+        # Normalization
         if normalize:
             if compute_stats_from is None:
-                # Calcola nuove statistiche (training set)
+                # Calculate new statistics (training set)
                 self.compute_normalization_stats(theta_tensor, iv_tensor)
                 if self.output_dir:
                     self.save_normalization_stats()
@@ -753,11 +753,11 @@ class DatasetBuilder:
                 print(f"  Theta std: {self.theta_std}")
                 print(f"  IV mean: {self.iv_mean:.4f}, std: {self.iv_std:.4f}")
             else:
-                # Usa statistiche esistenti (validation set)
+                # Use existing statistics (validation set)
                 self._copy_stats_from(compute_stats_from)
                 print(f"\nUsing normalization statistics from training set")
             
-            # Applica normalizzazione
+            # Apply normalization
             theta_norm = self.normalize_theta(theta_tensor)
             iv_norm = self.normalize_iv(iv_tensor)
             
@@ -780,7 +780,7 @@ class DatasetBuilder:
         return theta_tensor, iv_tensor
     
     def _copy_stats_from(self, other_builder):
-        """Copia statistiche di normalizzazione da un altro builder"""
+        """Copy normalization statistics from another builder"""
         self.theta_mean = other_builder.theta_mean
         self.theta_std = other_builder.theta_std
         self.iv_mean = other_builder.iv_mean
@@ -795,8 +795,7 @@ class DatasetBuilder:
                            n_paths=30000, show_progress=True, normalize=True,
                            compute_stats_from=None):
         """
-        Costruisce dataset pointwise con normalizzazione opzionale.
-        Versione aggiornata per processi generici.
+        Builds pointwise datasets with optional normalization.
         """
         n_theta = len(thetas)
         n_T = len(maturities)
@@ -806,13 +805,13 @@ class DatasetBuilder:
         if show_progress:
             print(f"Building pointwise dataset for {self.process.__class__.__name__}: {total_points} points")
         
-        # Pre-alloca
+        # Pre-allocate
         theta_pw = torch.empty(total_points, self.process.num_params, device=self.device)
         T_pw = torch.empty(total_points, device=self.device)
         k_pw = torch.empty(total_points, device=self.device)
         iv_pw = torch.empty(total_points, device=self.device)
         
-        # Ottieni parametri MC ottimizzati
+        # Get optimized MC parameters
         mc_params = self.get_process_specific_mc_params(base_n_paths=n_paths)
         
         idx = 0
@@ -820,7 +819,7 @@ class DatasetBuilder:
         
         for i, theta in enumerate(iterator):
             try:
-                # Calcola griglia per questo theta
+                # Calculate grid for this theta
                 iv_grid = pricer._mc_iv_grid(
                     theta, maturities, logK, 
                     n_paths=mc_params['n_paths'],
@@ -829,13 +828,13 @@ class DatasetBuilder:
                     control_variate=mc_params['control_variate']
                 )
                 
-                # Verifica validità
+                # Check validity
                 if torch.isnan(iv_grid).any() or torch.isinf(iv_grid).any():
                     print(f"\nWarning: Invalid IV for theta {i}")
                     default_vol = self._get_process_default_volatility(theta)
                     iv_grid = torch.full_like(iv_grid, default_vol)
                 
-                # Appiattisci
+                # Flatten
                 for j, T in enumerate(maturities):
                     for k_idx, k in enumerate(logK):
                         theta_pw[idx] = theta
@@ -859,7 +858,7 @@ class DatasetBuilder:
         
         if normalize:
             if compute_stats_from is None:
-                # Calcola statistiche
+                # Calculate statistics
                 self.compute_normalization_stats(theta_pw, iv_pw, T_pw, k_pw)
                 
                 if show_progress:
@@ -873,13 +872,13 @@ class DatasetBuilder:
                 if self.output_dir:
                     self.save_normalization_stats()
             else:
-                # Usa statistiche esistenti
+                # Use existing statistics
                 self._copy_stats_from(compute_stats_from)
                 
                 if show_progress:
                     print(f"\nUsing normalization statistics from training set")
             
-            # Normalizza
+            # Normalize
             theta_pw_norm = self.normalize_theta(theta_pw)
             T_pw_norm = self.normalize_T(T_pw)
             k_pw_norm = self.normalize_k(k_pw)
@@ -898,8 +897,7 @@ class DatasetBuilder:
                                      chunk_size: int = None,
                                      split: str = 'train'):
         """
-        Versione ottimizzata per Colab del build_pointwise_dataset.
-        Aggiornata per processi generici.
+        Colab-optimized version of build_pointwise_dataset.
         """
         # --- split dirs (train/val) ---
         split = split.lower()
@@ -915,7 +913,7 @@ class DatasetBuilder:
         n_K = len(logK)
         total_points = n_theta * n_T * n_K
         
-        # Check se esiste già il dataset finale
+        # Check if the final dataset already exists
         if self.output_dir:
             final_dataset_path = f"{ds_dir}/{self.process_name}_pointwise_dataset_final.pkl"
             if os.path.exists(final_dataset_path) and not resume_from:
@@ -924,10 +922,10 @@ class DatasetBuilder:
                     final_dataset_path, normalize, compute_stats_from
                 )
         
-        # Inizializza checkpoint manager
+        # Initialize checkpoint manager
         checkpoint_manager = CheckpointManager(ckpt_dir, prefix=f'{self.process_name}_pointwise_dataset')
         
-        # Resume da checkpoint se disponibile
+        # Resume from checkpoint if available
         start_idx = 0
         all_data = {'theta': [], 'T': [], 'k': [], 'iv': []}
         
@@ -944,7 +942,7 @@ class DatasetBuilder:
                     all_data, normalize, compute_stats_from, split=split
                 )
         elif resume_from is None:
-            # Auto-resume: ultimo checkpoint pointwise nello split corrente
+            # Auto-resume: last pointwise checkpoint in the current split
             pref = f"{self.process_name}_pointwise_dataset_checkpoint_"
             cand = sorted([f for f in os.listdir(ckpt_dir)
                            if f.startswith(pref) and f.endswith(".pkl")])
@@ -962,7 +960,7 @@ class DatasetBuilder:
             print(f"\nGenerating pointwise dataset for {self.process.__class__.__name__}: {total_points} total points")
             print(f"  Remaining thetas to process: {len(remaining_thetas)}")
         
-        # Ottieni parametri MC ottimizzati
+        # Get optimized MC parameters
         mc_params = self.get_process_specific_mc_params(base_n_paths=n_paths)
         
         # Process in batches
@@ -995,7 +993,7 @@ class DatasetBuilder:
                             print(f"Extreme IV values, clamping")
                             iv_grid = torch.clamp(iv_grid, 0.01, 2.0)
                         
-                        # Check repair stats se disponibili
+                        # Check repair stats if available
                         if hasattr(pricer, 'last_repair_stats') and pricer.last_repair_stats:
                             repair_ratio = pricer.last_repair_stats['repair_ratio']
                             if repair_ratio > 0.2:
@@ -1049,7 +1047,7 @@ class DatasetBuilder:
     def _process_completed_pointwise_dataset(self, all_data, normalize,
                                            compute_stats_from, cleanup_checkpoints=False,
                                            split: str = 'train'):
-        """Processa dataset completo: conversione, normalizzazione, salvataggio"""
+        """Process complete dataset: conversion, normalization, saving"""
         print("\nConverting to tensors...")
         theta_tensor = torch.stack(all_data['theta']).to(self.device)
         T_tensor = torch.stack(all_data['T']).to(self.device)
@@ -1059,7 +1057,7 @@ class DatasetBuilder:
         print(f"Dataset shape: {theta_tensor.shape[0]} points")
         print(f"Unique thetas: {len(torch.unique(theta_tensor, dim=0))}")
     
-        # cartelle per split
+        # split folders
         split = split.lower()
         assert split in ('train','val')
         ds_dir = (os.path.join(self.dirs['datasets'], split)
@@ -1131,7 +1129,7 @@ class DatasetBuilder:
         return theta_tensor, T_tensor, k_tensor, iv_tensor
     
     def _load_final_pointwise_dataset(self, path, normalize, compute_stats_from):
-        """Carica dataset finale e applica normalizzazione se necessario"""
+        """Load final dataset and apply normalization if necessary"""
         with open(path, 'rb') as f:
             data = pickle.load(f)
         
@@ -1157,9 +1155,8 @@ class DatasetBuilder:
         return theta_tensor, T_tensor, k_tensor, iv_tensor
     
 
-
     # ---------------- Random Grid / Random Smiles (Baschetti et al.) ----------------
-    # Buckets temporali (Eq. 2) e parametri strikes (Eq. 3)
+    # Temporal buckets (Eq. 2) and strikes parameters (Eq. 3)
     _maturity_buckets = [
         (0.003, 0.030), (0.030, 0.090), (0.090, 0.150), (0.150, 0.300),
         (0.300, 0.500), (0.500, 0.750), (0.750, 1.000), (1.000, 1.250),
@@ -1168,7 +1165,7 @@ class DatasetBuilder:
     _strike_params = dict(l=0.55, u=0.30, n_left_tail=4, n_center=7, n_right_tail=2, center_width=0.20)
 
     def _sample_random_maturities(self, n_maturities: int = 11, buckets=None, seed: int = None):
-        """Campiona maturities casuali dai buckets e le ordina."""
+        """Sample random maturities from the buckets and sort them"""
         if buckets is None:
             buckets = self._maturity_buckets[:n_maturities]
         rng = np.random.default_rng(seed)
@@ -1188,12 +1185,12 @@ class DatasetBuilder:
         return torch.tensor(mats, dtype=torch.float32, device=self.device)
 
     def _sample_random_strikes(self, T: float, spot: float = 1.0, n_strikes: int = 13):
-        """Campiona strikes random rispettando la granularità tipica del mercato."""
+        """Sample random strikes respecting the typical granularity of the market"""
         p = self._strike_params
         sqrt_T = float(np.sqrt(T))
         K_min = spot * (1 - p['l'] * sqrt_T)
         K_max = spot * (1 + p['u'] * sqrt_T)
-        # Guardrail per estremi numericamente problematici
+        # Guardrail for numerically problematic extremes
         K_min = max(K_min, 0.05 * spot)
         K_max = min(K_max, 3.00 * spot)
         center_lower = spot * (1 - p['center_width'] * sqrt_T)
@@ -1202,7 +1199,7 @@ class DatasetBuilder:
         n_left, n_center, n_right = p['n_left_tail'], p['n_center'], p['n_right_tail']
         tot_default = n_left + n_center + n_right
         if n_strikes != tot_default:
-            # ridistribuisci in proporzione, garantendo almeno 1 in ogni zona
+            # redistribute proportionally, ensuring at least 1 in each zone
             n_left = max(1, int(round(p['n_left_tail'] * n_strikes / tot_default)))
             n_center = max(1, int(round(p['n_center'] * n_strikes / tot_default)))
             n_right = max(1, n_strikes - n_left - n_center)
@@ -1222,7 +1219,7 @@ class DatasetBuilder:
     def _generate_random_grid(self, theta: torch.Tensor, n_maturities: int = 11,
                               n_strikes_per_maturity: int = 13, spot: float = 1.0,
                               mc_params: dict = None):
-        """Genera una griglia IV(T,K) random per un set di parametri theta."""
+        """Generates a random IV(T,K) grid for a set of theta parameters"""
         if mc_params is None:
             mc_params = self.get_process_specific_mc_params()
         mats = self._sample_random_maturities(n_maturities)
@@ -1253,55 +1250,142 @@ class DatasetBuilder:
         return {'maturities': mats, 'strikes': all_strikes, 'iv_grid': torch.stack(iv_grid)}
 
     def build_random_grids_dataset(self, n_surfaces: int = 10000, n_maturities: int = 11,
-                                   n_strikes: int = 13, n_paths: int = 30000, spot: float = 1.0,
-                                   normalize: bool = True, compute_stats_from=None,
-                                   show_progress: bool = True, batch_size: int = 50):
-        """Costruisce dataset pointwise con approccio Random Grids."""
-        print(f"\nBuilding Random Grids Pointwise Dataset: {n_surfaces} × {n_maturities} × {n_strikes}")
+                               n_strikes: int = 13, n_paths: int = 30000, spot: float = 1.0,
+                               normalize: bool = True, compute_stats_from=None,
+                               show_progress: bool = True, batch_size: int = 50,
+                               checkpoint_every: int = 100, resume_from: str = None,
+                               save_all_thetas: bool = True, base_seed: int = 42):
+        """Build pointwise datasets with Random Grids approach"""
+        
+        # Setup checkpoint directory
+        checkpoint_dir = (f"{self.dirs['checkpoints']}/random_grids"
+                      if getattr(self, "dirs", None) else
+                      (f"{self.output_dir}/checkpoints/random_grids" if self.output_dir else "./checkpoints/random_grids"))
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        proc_slug = getattr(self.process.__class__, "__name__", "process").lower()
+        # Check for existing checkpoint
+        start_idx = 0
         all_theta, all_T, all_k, all_iv = [], [], [], []
+        thetas_total = None
+        
+        if resume_from == 'latest':
+            # Find the last checkpoint of the current process (numeric sort order)
+            pattern = rf'^{proc_slug}_pointwise_checkpoint_long_(\d+)(?:\.pkl)?$'
+            cands = [f for f in os.listdir(checkpoint_dir) if re.match(pattern, f)]
+            def _idx(name):
+                m = re.match(pattern, name)
+                return int(m.group(1)) if m else -1
+        
+        if resume_from and os.path.exists(resume_from):
+            print(f"Resuming from checkpoint: {resume_from}")
+            with open(resume_from, 'rb') as f:
+                checkpoint = pickle.load(f)
+            # Tensors on CPU for portability
+            all_theta = [t.cpu() for t in checkpoint['theta']]
+            all_T     = [t.cpu() for t in checkpoint['T']]
+            all_k     = [t.cpu() for t in checkpoint['k']]
+            all_iv    = [t.cpu() for t in checkpoint['iv']]
+            if save_all_thetas and ('thetas_total' in checkpoint) and isinstance(checkpoint['thetas_total'], torch.Tensor):
+                thetas_total = checkpoint['thetas_total'].cpu()
+            start_idx = checkpoint['n_surfaces_done']
+            print(f"Resuming from surface {start_idx}/{n_surfaces}")
+            
+            if start_idx >= n_surfaces:
+                print("Dataset already complete!")
+                return self._finalize_random_grids_dataset(
+                    all_theta, all_T, all_k, all_iv, normalize, compute_stats_from
+                )
+        
+        print(f"\nBuilding Random Grids Pointwise Dataset: {n_surfaces} × {n_maturities} × {n_strikes}")
+        print(f"Starting from surface {start_idx}")
+        
         mc_params = self.get_process_specific_mc_params(base_n_paths=n_paths)
-
-        thetas = self.sample_theta_lhs(n_surfaces)
-        iterator = range(n_surfaces)
+        
+        # Generate only remaining surfaces
+        thetas = self.sample_theta_lhs(n_surfaces - start_idx)
+        if thetas_total is None:
+            # Pre-sample LHS deterministico (repro) se non recuperato da checkpoint
+            thetas_total = self.sample_theta_lhs(n_surfaces, seed=base_seed).cpu()
+        thetas = thetas_total[start_idx:].to(self.device)
+        
+        iterator = range(start_idx, n_surfaces)
         if show_progress:
             try:
                 from tqdm import tqdm
-                iterator = tqdm(iterator, desc="Generating random grids")
+                iterator = tqdm(iterator, desc="Generating random grids", initial=start_idx, total=n_surfaces)
             except Exception:
                 pass
-
+        
         for i in iterator:
-            theta = thetas[i]
+            if i < start_idx:
+                continue  # Skip already processed
+                
+            theta = thetas[i - start_idx]
             grid = self._generate_random_grid(theta, n_maturities, n_strikes, spot, mc_params)
+            
             for j, T in enumerate(grid['maturities']):
                 strikes = grid['strikes'][j]
                 logK = torch.log(strikes / spot)
                 iv_smile = grid['iv_grid'][j]
-                all_theta.extend([theta] * len(strikes))
-                all_T.extend([T] * len(strikes))
-                all_k.extend(list(logK))
-                all_iv.extend(list(iv_smile))
+                # Store to CPU to keep checkpoints light/safe
+                all_theta.extend([theta.detach().cpu()] * len(strikes))
+                all_T.extend([T.detach().cpu()] * len(strikes))
+                all_k.extend([lk.detach().cpu() for lk in logK])
+                all_iv.extend([iv.detach().cpu() for iv in iv_smile])
+            
+            # Save checkpoint periodically
+            if (i + 1) % checkpoint_every == 0 or (i + 1) == n_surfaces:
+                checkpoint_data = {
+                    'theta': all_theta,
+                    'T': all_T,
+                    'k': all_k,
+                    'iv': all_iv,
+                    'n_surfaces_done': i + 1,
+                    'n_surfaces_total': n_surfaces,
+                    'timestamp': datetime.now().isoformat()
+                }
+                checkpoint_path = f"{checkpoint_dir}/random_grids_checkpoint_{i+1}.pkl"
+                if save_all_thetas:
+                    checkpoint_data['thetas_total'] = thetas_total
+                # File name: <processclass>_pointwise_checkpoint_long_<N>.pkl
+                checkpoint_path = f"{checkpoint_dir}/{proc_slug}_pointwise_checkpoint_long_{i+1}.pkl"
+                with open(checkpoint_path, 'wb') as f:
+                    pickle.dump(checkpoint_data, f)
+                print(f"\n✓ Checkpoint saved: {i+1}/{n_surfaces} surfaces")
+            
             if (i + 1) % 10 == 0 and self.device.type == 'cuda':
                 torch.cuda.empty_cache()
+        
+        return self._finalize_random_grids_dataset(
+            all_theta, all_T, all_k, all_iv, normalize, compute_stats_from
+        )
 
-        theta_pw = torch.stack(all_theta); T_pw = torch.stack(all_T)
-        k_pw = torch.stack(all_k); iv_pw = torch.stack(all_iv)
-
+    def _finalize_random_grids_dataset(self, all_theta, all_T, all_k, all_iv, 
+                                    normalize, compute_stats_from):
+        """Finalize the dataset after generation."""
+        # Stack CPU lists and realign to builder device
+        theta_pw = torch.stack(all_theta).to(self.device, non_blocking=True)
+        T_pw     = torch.stack(all_T).to(self.device, non_blocking=True)
+        k_pw     = torch.stack(all_k).to(self.device, non_blocking=True)
+        iv_pw    = torch.stack(all_iv).to(self.device, non_blocking=True)
+        
         if normalize:
             if compute_stats_from is None:
                 self.compute_normalization_stats(theta_pw, iv_pw, T_pw, k_pw)
-                self.save_normalization_stats()
+                if self.output_dir:
+                    self.save_normalization_stats()
             else:
                 self._copy_stats_from(compute_stats_from)
+            
             return (self.normalize_theta(theta_pw), self.normalize_T(T_pw),
                     self.normalize_k(k_pw), self.normalize_iv(iv_pw))
-
+        
         return theta_pw, T_pw, k_pw, iv_pw
 
     def build_random_smiles_dataset(self, n_smiles: int = 50000, n_strikes_per_smile: int = 13,
                                     n_paths: int = 30000, spot: float = 1.0, normalize: bool = True,
                                     compute_stats_from=None, show_progress: bool = True):
-        """Variante leggera: una T random per ogni theta."""
+        """Light variant: a random T for each theta"""
         print(f"\nBuilding Random Smiles Dataset: {n_smiles} × {n_strikes_per_smile}")
         mc_params = self.get_process_specific_mc_params(base_n_paths=n_paths)
         thetas = self.sample_theta_lhs(n_smiles)
@@ -1359,9 +1443,10 @@ class DatasetBuilder:
             return (self.normalize_theta(theta_pw), self.normalize_T(T_pw),
                     self.normalize_k(k_pw), self.normalize_iv(iv_pw))
         return theta_pw, T_pw, k_pw, iv_pw
+    
 class MultiRegimeDatasetBuilder(DatasetBuilder):
     """
-    Estende DatasetBuilder per gestire dataset multi-regime con processi generici.
+    Extends DatasetBuilder to handle multi-regime datasets with generic processes.
     """
     
     def __init__(self, process: Union[str, StochasticProcess], 
@@ -1371,14 +1456,14 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         
         super().__init__(process, device, output_dir)
         
-        # Statistiche separate per regime
+        # Separate statistics by regime
         self.regime_stats = {
             'short': {'iv_mean': None, 'iv_std': None},
             'mid': {'iv_mean': None, 'iv_std': None},
             'long': {'iv_mean': None, 'iv_std': None}
         }
         
-        # Directory aggiuntive per multi-regime
+        # Additional directories for multi-regime
         if self.output_dir:
             process_name = self.process.__class__.__name__.lower()
             self.regime_dirs = {
@@ -1393,13 +1478,13 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         self.enable_smile_repair = enable_smile_repair
         self.smile_repair_method = smile_repair_method
 
-        # Normalizza dataset_type → "train" | "val"
+        # Normalize dataset_type → "train" | "val"
         self.dataset_type = (dataset_type or "train").lower()
         if self.dataset_type in ("validation", "valid"):
             self.dataset_type = "val"
         assert self.dataset_type in ("train", "val"), "dataset_type deve essere 'train' o 'val'"
 
-        # Aggiungi sottocartelle per fase (train/val) a tutte le dir di output
+        # Add subfolders per phase (train/val) to all output directories
         if self.output_dir:
             # checkpoints/<phase>
             self.dirs['checkpoints'] = os.path.join(self.dirs['checkpoints'], self.dataset_type)
@@ -1409,7 +1494,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                 self.regime_dirs[k] = os.path.join(self.regime_dirs[k], self.dataset_type)
                 os.makedirs(self.regime_dirs[k], exist_ok=True)
         else:
-            # fallback locale
+            # local fallback
             self.dirs['checkpoints'] = os.path.join("./checkpoints", self.dataset_type)
             os.makedirs(self.dirs['checkpoints'], exist_ok=True)
             for k in ['short','mid','long','unified']:
@@ -1419,20 +1504,20 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
     
     def compute_regime_normalization_stats(self, thetas, iv_short, iv_mid, iv_long):
         """
-        Calcola statistiche di normalizzazione per ogni regime.
-        
+        Calculate normalization statistics for each regime.
+
         Args:
-            thetas: parametri comuni a tutti i regimi
-            iv_short: IV del regime short term
-            iv_mid: IV del regime mid term
-            iv_long: IV del regime long term
+        thetas: parameters common to all regimes
+        iv_short: IV of the short-term regime
+        iv_mid: IV of the mid-term regime
+        iv_long: IV of the long-term regime
         """
-        # Statistiche theta comuni
+        # Common theta statistics
         self.theta_mean = thetas.mean(dim=0)
         self.theta_std = thetas.std(dim=0)
         self.theta_std = torch.where(self.theta_std > 1e-6, self.theta_std, torch.ones_like(self.theta_std))
         
-        # Statistiche IV per regime
+        # IV Statistics by Regime
         for regime, iv_data in [('short', iv_short), ('mid', iv_mid), ('long', iv_long)]:
             self.regime_stats[regime]['iv_mean'] = iv_data.mean()
             self.regime_stats[regime]['iv_std'] = iv_data.std()
@@ -1440,21 +1525,21 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                 self.regime_stats[regime]['iv_std'] = torch.tensor(1.0, device=self.device)
     
     def normalize_iv_regime(self, iv, regime):
-        """Normalizza IV usando le statistiche del regime specifico"""
+        """Normalize IV using regime-specific statistics"""
         stats = self.regime_stats[regime]
         if stats['iv_mean'] is None or stats['iv_std'] is None:
             raise ValueError(f"Normalization stats for regime '{regime}' not computed.")
         return (iv - stats['iv_mean']) / stats['iv_std']
     
     def denormalize_iv_regime(self, iv_norm, regime):
-        """Denormalizza IV usando le statistiche del regime specifico"""
+        """Denormalize IV using regime-specific statistics"""
         stats = self.regime_stats[regime]
         if stats['iv_mean'] is None or stats['iv_std'] is None:
             raise ValueError(f"Normalization stats for regime '{regime}' not computed.")
         return iv_norm * stats['iv_std'] + stats['iv_mean']
     
     def save_regime_normalization_stats(self, path=None):
-        """Salva tutte le statistiche di normalizzazione inclusi i regimi"""
+        """Save all normalization statistics including regimes"""
         if path is None and self.output_dir:
             path = f"{self.dirs['stats']}/regime_normalization_stats.pt"
         
@@ -1468,7 +1553,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         print(f"✓ Regime normalization stats saved: {path}")
     
     def load_regime_normalization_stats(self, path=None):
-        """Carica le statistiche di normalizzazione multi-regime"""
+        """Load multi-regime normalization statistics"""
         if path is None and self.output_dir:
             path = f"{self.dirs['stats']}/regime_normalization_stats.pt"
         
@@ -1485,7 +1570,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                                 mixed_precision=True, chunk_size=None,
                                 sample_method='shared', force_regenerate=False):
         """
-        Costruisce dataset per MultiRegimeGridPricer (con resume per-regime e checkpoint separati per phase).
+        Builds datasets for MultiRegimeGridPricer (with per-regime resumes and separate per-phase checkpoints).
         """
         import os, gc, pickle, time
         from datetime import datetime
@@ -1495,28 +1580,28 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         process_name = self.process.__class__.__name__.lower()
         phase = getattr(self, "dataset_type", "train")
 
-        # Se esiste già il dataset finale (per phase), carica e ritorna
+        # If the final dataset already exists (for phase), load and return
         if self.output_dir:
             final_path = os.path.join(self.regime_dirs['unified'], "multi_regime_dataset_final.pkl")
             if os.path.exists(final_path) and not resume_from and not force_regenerate:
                 print(f"✓ Multi-regime dataset {phase} già esistente per {self.process.__class__.__name__}!")
                 return self._load_final_multi_regime_dataset(final_path, normalize, compute_stats_from)
 
-        # Checkpoint manager separato per phase
+        # Separate checkpoint manager per phase
         checkpoint_manager = CheckpointManager(
             self.dirs['checkpoints'] if self.output_dir else './checkpoints',
             prefix=f'{self.process_name}_multi_regime',
             keep_last_n=9
         )
 
-        # Stato aggregato iniziale
+        # Initial aggregate state
         all_data = {
             'short': {'theta': [], 'iv': []},
             'mid':   {'theta': [], 'iv': []},
             'long':  {'theta': [], 'iv': []}
         }
 
-        # Resume per‑regime dalla phase corrente
+        # Resume per-regime from the current phase
         if not force_regenerate:
             latest_per_regime = checkpoint_manager.find_latest_per_regime()
         else:
@@ -1526,7 +1611,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
             print("Found per-regime checkpoints:",
                 ", ".join(os.path.basename(p) for p in latest_per_regime.values()))
 
-            # Prendi, per ciascun regime, il dataset più completo
+            # Take, for each regime, the most complete dataset
             best = { 'short': (0, None), 'mid': (0, None), 'long': (0, None) }
             for _, path in latest_per_regime.items():
                 with open(path, 'rb') as f:
@@ -1541,7 +1626,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                     all_data[r]['theta'] = best[r][1][r]['theta']
                     all_data[r]['iv']    = best[r][1][r]['iv']
 
-        # Target per-regime: int (uguale per tutti) | dict | tuple/list
+        # Target per-regime: int (same for all) | dict | tuples/list
         if isinstance(n_samples, dict):
             targets = {
                 'short': int(n_samples.get('short', 0)),
@@ -1553,7 +1638,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         else:
             targets = {'short': int(n_samples), 'mid': int(n_samples), 'long': int(n_samples)}
 
-        # Calcola progresso e rimanenti per-regime
+        # Calculate progress and remaining per-regime
         done = {reg: len(all_data[reg]['theta']) for reg in ['short','mid','long']}
         remaining = {reg: max(0, targets[reg] - done[reg]) for reg in ['short','mid','long']}
 
@@ -1563,7 +1648,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                 all_data, normalize, compute_stats_from
             )
 
-        # Generazione thetas rimanenti per ciascun regime
+        # Remaining thetas generation for each regime
         theta_dict = {}
         if sample_method == 'shared':
             max_rem = max(remaining.values())
@@ -1580,7 +1665,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                 theta_dict[reg] = self.sample_theta_lhs(r, seed=seeds[reg]) if r > 0 else \
                                 torch.empty((0, len(self.param_names)), dtype=torch.float32, device=self.device)
 
-        # Process in batches per i soli regimi incompleti (short → mid → long)
+        # Process in batches for incomplete regimes only (short → mid → long)
         for regime in ['short','mid','long']:
             rem = remaining[regime]
             if rem == 0:
@@ -1595,7 +1680,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
             regime_thetas = theta_dict[regime]
             pricer = getattr(multi_regime_pricer, f"{regime}_term_pricer")
 
-            # progress locale al regime
+            # local progress to the regime
             start_idx_reg = done[regime]
 
             for batch_idx in range(0, len(regime_thetas), batch_size):
@@ -1635,14 +1720,14 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                         if len(iv_batch) % 10 == 0 and self.device.type == 'cuda':
                             torch.cuda.empty_cache()
 
-                # Accumula
+                # Accumulate
                 all_data[regime]['theta'].extend([t.cpu() for t in batch_thetas])
                 all_data[regime]['iv'].extend(iv_batch)
 
                 batch_time = time.time() - batch_start_time
                 print(f"✓ {regime} batch completed in {batch_time:.1f}s")
 
-                # Checkpoint coerente e per-regime (prefisso include phase)
+                # Consistent and per-regime checkpoint (prefix includes phase)
                 if ((batch_idx // batch_size + 1) % checkpoint_every == 0):
                     n_done_reg = start_idx_reg + batch_end
                     checkpoint_data = {
@@ -1658,7 +1743,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                     torch.cuda.empty_cache()
                     gc.collect()
 
-            # Checkpoint di fine regime con stesso prefisso
+            # End-of-regime checkpoint with the same prefix
             n_done_reg = len(all_data[regime]['theta'])
             checkpoint_data = {
                 'data': all_data,
@@ -1670,7 +1755,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
             checkpoint_name = f"{checkpoint_manager.prefix}_checkpoint_{regime}_{n_done_reg}.pkl"
             checkpoint_manager.save_checkpoint(checkpoint_data, checkpoint_name)
 
-        # Tutti i regimi dovrebbero essere completi ora
+        # All regimens should be complete now
         return self._process_completed_multi_regime_dataset(
             all_data, normalize, compute_stats_from, cleanup_checkpoints=True
         )
@@ -1678,7 +1763,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
     
     def _process_completed_multi_regime_dataset(self, all_data, normalize,
                                                 compute_stats_from, cleanup_checkpoints=False):
-        """Processa e salva dataset multi-regime completo (per phase), con cleanup dei checkpoint."""
+        """Process and save complete multi-regime datasets (per phase), with checkpoint cleanup"""
         import os, pickle
         from datetime import datetime
         import torch
@@ -1686,7 +1771,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
 
         phase = getattr(self, "dataset_type", "train")
 
-        # Converti a tensori
+        # Convert to tensors
         print("\nConverting to tensors...")
         datasets = {}
         for regime in ['short', 'mid', 'long']:
@@ -1699,9 +1784,8 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
             }
             print(f"{regime}: Theta shape {theta_tensor.shape}, IV shape {iv_tensor.shape}")
 
-        # Salva dataset raw (per-regime e unificato nella cartella per phase)
+        # Save raw dataset (per-regime and unified in the per-phase folder)
         if self.output_dir:
-            # Per regime
             for regime in ['short', 'mid', 'long']:
                 regime_data = {
                     'theta': datasets[regime]['theta'].cpu(),
@@ -1713,7 +1797,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                     pickle.dump(regime_data, f)
                 print(f"✓ {regime} dataset saved: {regime_path}")
 
-            # Unificato (nella dir unified della phase)
+            # Unified (in the unified dir of the phase)
             unified_data = {
                 'short': datasets['short'],
                 'mid': datasets['mid'],
@@ -1725,9 +1809,9 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                 pickle.dump(unified_data, f)
             print(f"✓ Unified dataset saved: {unified_path}")
 
-            # Cleanup checkpoint files: tieni l'ultimo per ogni regime nella phase corrente
+            # Cleanup checkpoint files: keep the last one for each regime in the current phase
             if cleanup_checkpoints:
-                checkpoint_dir = self.dirs['checkpoints']  # qui c'è già /train o /val
+                checkpoint_dir = self.dirs['checkpoints']
                 files = [f for f in os.listdir(checkpoint_dir)
                         if f.startswith(f"{self.process_name}_multi_regime_checkpoint_") and f.endswith('.pkl')]
 
@@ -1750,10 +1834,10 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                         os.remove(os.path.join(checkpoint_dir, f)); removed += 1
                 print(f"✓ [{phase}] Removed {removed} checkpoints; kept: {', '.join(sorted(keep))}")
 
-        # Normalizzazione (opzionale; attenzione al data leakage a monte)
+        # Normalization (optional; beware of upstream data leakage)
         if normalize:
             if compute_stats_from is None:
-                # Calcola nuove statistiche: usa TUTTI i theta concatenati (robusto a taglie diverse)
+                # Calculate new statistics: use ALL concatenated thetas (robust across sizes)
                 theta_all = torch.cat([datasets[r]['theta'] for r in ['short','mid','long']], dim=0)
                 self.compute_regime_normalization_stats(
                     theta_all,
@@ -1771,18 +1855,18 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
                     stats = self.regime_stats[regime]
                     print(f"  {regime} IV: mean={stats['iv_mean']:.4f}, std={stats['iv_std']:.4f}")
             else:
-                # Usa statistiche esistenti (es. dal TRAIN)
+                # Use existing statistics (e.g. from TRAIN)
                 self._copy_regime_stats_from(compute_stats_from)
                 print(f"\nUsing normalization statistics from training set")
 
-            # Applica normalizzazione
+            # Apply normalization
             normalized_datasets = {}
             for regime in ['short', 'mid', 'long']:
                 theta_norm = self.normalize_theta(datasets[regime]['theta'])
                 iv_norm = self.normalize_iv_regime(datasets[regime]['iv'], regime)
                 normalized_datasets[regime] = {'theta': theta_norm, 'iv': iv_norm}
 
-            # Salva dataset normalizzati (opzionale)
+            # Save normalized datasets (optional)
             if self.output_dir:
                 norm_data = {
                     'datasets': normalized_datasets,
@@ -1804,13 +1888,13 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
 
     
     def _copy_regime_stats_from(self, other_builder):
-        """Copia statistiche da un altro MultiRegimeDatasetBuilder"""
+        """Copy statistics from another MultiRegimeDatasetBuilder"""
         self.theta_mean = other_builder.theta_mean
         self.theta_std = other_builder.theta_std
         self.regime_stats = other_builder.regime_stats.copy()
     
     def _load_final_multi_regime_dataset(self, path, normalize, compute_stats_from):
-        """Carica dataset finale multi-regime"""
+        """Load final multi-regime dataset"""
         with open(path, 'rb') as f:
             data = pickle.load(f)
         
@@ -1823,7 +1907,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         
         if normalize:
             if compute_stats_from is None:
-                # Calcola statistiche: usa TUTTI i theta concatenati
+                # Calculate statistics: use ALL concatenated thetas
                 theta_all = torch.cat([datasets[r]['theta'] for r in ['short','mid','long']], dim=0)
                 self.compute_regime_normalization_stats(
                     theta_all,
@@ -1835,7 +1919,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
             else:
                 self._copy_regime_stats_from(compute_stats_from)
             
-            # Normalizza
+            # Normalize
             normalized_datasets = {}
             for regime in ['short', 'mid', 'long']:
                 normalized_datasets[regime] = {
@@ -1849,19 +1933,19 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
     
     def split_multi_regime_dataset(self, datasets, train_ratio=0.8, seed=42):
         """
-        Divide dataset multi-regime in train/validation mantenendo consistency.
-        
+        Splits multi-regime datasets into train/validation datasets while maintaining consistency.
+
         Args:
-            datasets: dict con dataset per ogni regime
-            train_ratio: percentuale per training
-            seed: random seed
-        
+        datasets: dict with datasets for each regime
+        train_ratio: percentage for training
+        seed: random seed
+
         Returns:
-            train_datasets, val_datasets (entrambi dict con stessa struttura)
+        train_datasets, val_datasets (both dicts with the same structure)
         """
         torch.manual_seed(seed)
         
-        # Se le taglie coincidono, manteniamo lo split "coerente" tra regimi; altrimenti split per-regime.
+        # If the sizes match, we maintain a "consistent" split between regimes; otherwise, we split per regime.
         sizes = {r: len(datasets[r]['theta']) for r in ['short','mid','long']}
         same_size = len(set(sizes.values())) == 1
 
@@ -1890,7 +1974,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         return train_datasets, val_datasets
     
 class CheckpointManager:
-    """Gestisce checkpoint per dataset generation"""
+    """Manages checkpoints for dataset generation"""
     
     def __init__(self, checkpoint_dir, prefix='checkpoint', keep_last_n=3):
         self.checkpoint_dir = checkpoint_dir
@@ -1899,17 +1983,17 @@ class CheckpointManager:
         os.makedirs(checkpoint_dir, exist_ok=True)
     
     def save_checkpoint(self, data, name):
-        """Salva checkpoint e gestisce pulizia vecchi checkpoint"""
+        """Saves checkpoints and manages cleanup of old checkpoints"""
         path = f"{self.checkpoint_dir}/{name}"
         with open(path, 'wb') as f:
             pickle.dump(data, f)
         print(f"✓ Checkpoint saved: {name}")
         
-        # Cleanup vecchi checkpoint
+        # Cleanup old checkpoints
         self._cleanup_old_checkpoints()
     
     def _cleanup_old_checkpoints(self):
-    # Mantiene solo gli ultimi N per mtime, più robusto dell'ordine alfabetico
+    # Keeps only the last N for mtime, more robust than alphabetical order
         paths = [
             os.path.join(self.checkpoint_dir, f)
             for f in os.listdir(self.checkpoint_dir)
@@ -1920,7 +2004,7 @@ class CheckpointManager:
             for old_p in paths[:-self.keep_last_n]:
                 os.remove(old_p)
 
-    # Elenco solo i checkpoint che rispettano il prefisso completo e il pattern "_checkpoint_"
+    # List only checkpoints that match the full prefix and pattern "_checkpoint_"
     def _list_checkpoints(self):
         return [
             os.path.join(self.checkpoint_dir, f)
@@ -1929,7 +2013,7 @@ class CheckpointManager:
         ]
     
     def find_latest(self):
-        """Trova l'ultimo checkpoint disponibile"""
+        """Find the last available checkpoint"""
         checkpoints = [
             f for f in os.listdir(self.checkpoint_dir)
             if f.endswith('.pkl') and self.prefix in f
@@ -1938,24 +2022,24 @@ class CheckpointManager:
         if not checkpoints:
             return None
         
-        # Estrai timestamp o numeri dai nomi dei checkpoint
+        # Extract timestamps or numbers from checkpoint names
         checkpoint_info = []
         for cp in checkpoints:
             try:
-                # Prova prima a estrarre un numero dopo l'ultimo underscore
+                # Try to draw a number after the last underscore first.
                 parts = cp.replace('.pkl', '').split('_')
                 if parts[-1].isdigit():
                     num = int(parts[-1])
                     checkpoint_info.append((num, cp))
                 else:
-                    # Se non c'è numero, usa il tempo di modifica del file
+                    # If there is no number, use the file modification time
                     mtime = os.path.getmtime(os.path.join(self.checkpoint_dir, cp))
                     checkpoint_info.append((mtime, cp))
             except:
                 continue
         
         if checkpoint_info:
-            # Trova il checkpoint con il valore più alto (numero o timestamp)
+            # Find the checkpoint with the highest value (number or timestamp)
             latest = max(checkpoint_info, key=lambda x: x[0])
             return os.path.join(self.checkpoint_dir, latest[1])
         
