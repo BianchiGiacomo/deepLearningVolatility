@@ -1318,12 +1318,23 @@ class DatasetBuilder:
         
         mc_params = self.get_process_specific_mc_params(base_n_paths=n_paths)
         
-        # Generate only remaining surfaces
-        thetas = self.sample_theta_lhs(n_surfaces - start_idx)
-        if thetas_total is None:
-            # Pre-sample LHS deterministico (repro) se non recuperato da checkpoint
-            thetas_total = self.sample_theta_lhs(n_surfaces, seed=base_seed).cpu()
-        thetas = thetas_total[start_idx:].to(self.device)
+        # Build the tail of the full theta sequence robustly (resume-safe)
+        def _ensure_full_thetas_total(t_total, n, seed):
+            # If missing or too short, rebuild deterministically
+            if (t_total is None) or (isinstance(t_total, torch.Tensor) and t_total.size(0) < n):
+                full = self.sample_theta_lhs(n, seed=base_seed).cpu()
+                if isinstance(t_total, torch.Tensor) and t_total.numel() > 0:
+                    keep = min(t_total.size(0), full.size(0))
+                    full[:keep] = t_total[:keep]
+                return full
+            return t_total
+
+        thetas_total = _ensure_full_thetas_total(thetas_total, n_surfaces, base_seed)
+        tail = thetas_total[start_idx:n_surfaces]
+        if tail.numel() == 0 and start_idx < n_surfaces:
+            # Extreme fallback: generate only the missing queue
+            tail = self.sample_theta_lhs(n_surfaces - start_idx).cpu()
+        thetas = tail.to(self.device)
         
         iterator = range(start_idx, n_surfaces)
         if show_progress:
