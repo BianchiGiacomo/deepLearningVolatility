@@ -1485,9 +1485,23 @@ class DatasetBuilder:
         mc_params = self.get_process_specific_mc_params(base_n_paths=n_paths)
 
         # Pre-sample deterministic LHS for reproducibility (and resume)
-        if thetas_total is None:
-            thetas_total = self.sample_theta_lhs(n_smiles, seed=base_seed).cpu()
-        thetas = thetas_total[start_idx:].to(self.device)
+        # Make resume robust to missing/short thetas_total in old checkpoints
+        def _ensure_full_thetas_total(t_total, n, seed):
+            # Rebuild full sequence if missing or shorter than requested
+            if (t_total is None) or (isinstance(t_total, torch.Tensor) and t_total.size(0) < n):
+                full = self.sample_theta_lhs(n, seed=base_seed).cpu()
+                if isinstance(t_total, torch.Tensor) and t_total.numel() > 0:
+                    keep = min(t_total.size(0), full.size(0))
+                    full[:keep] = t_total[:keep]
+                return full
+            return t_total
+
+        thetas_total = _ensure_full_thetas_total(thetas_total, n_smiles, base_seed)
+        tail = thetas_total[start_idx:n_smiles]
+        # Extreme fallback if tail is still empty (old/truncated checkpoint)
+        if tail.numel() == 0 and start_idx < n_smiles:
+            tail = self.sample_theta_lhs(n_smiles - start_idx, seed=base_seed + 1).cpu()
+        thetas = tail.to(self.device)
 
         iterator = range(start_idx, n_smiles)
         if show_progress:
