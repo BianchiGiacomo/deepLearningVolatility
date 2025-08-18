@@ -1678,27 +1678,27 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
         """
         self.net.eval()
         
-        B = theta.size(0)
-        T_len = maturities.size(0)
-        K_len = logK.size(0)
-        
-        # Create mesh
-        theta_exp = theta.view(B, 1, 1, 4).expand(B, T_len, K_len, 4)
-        mat_mesh, k_mesh = torch.meshgrid(maturities, logK, indexing='ij')
-        mat_exp = mat_mesh.unsqueeze(0).expand(B, T_len, K_len)
-        k_exp = k_mesh.unsqueeze(0).expand(B, T_len, K_len)
-        
+        if theta.dim() == 1:
+            theta = theta.unsqueeze(0)
+        B, P = theta.shape[0], theta.shape[-1]
+        T_len = maturities.numel()
+        K_len = logK.numel()
+
+        # Mesh and broadcast
+        mat_mesh, k_mesh = torch.meshgrid(maturities.reshape(-1), logK.reshape(-1), indexing='ij')
+        theta_exp = theta[:, None, None, :].expand(B, T_len, K_len, P)
+        mat_exp   = mat_mesh.unsqueeze(0).expand(B, T_len, K_len)
+        k_exp     = k_mesh.unsqueeze(0).expand(B, T_len, K_len)
+
         # Flatten
-        theta_flat = theta_exp.reshape(-1, 4)
-        T_flat = mat_exp.reshape(-1)
-        k_flat = k_exp.reshape(-1)
-        
-        # Forward with normalization/denormalization managed by price_iv
+        theta_flat = theta_exp.reshape(-1, P)
+        T_flat     = mat_exp.reshape(-1)
+        k_flat     = k_exp.reshape(-1)
+
         with torch.no_grad():
             iv_flat = self.price_iv(theta_flat, T_flat, k_flat,
                                     denormalize_output=denormalize_output,
                                     inputs_normalized=inputs_normalized)
-        
         return iv_flat.view(B, T_len, K_len)
     
     
