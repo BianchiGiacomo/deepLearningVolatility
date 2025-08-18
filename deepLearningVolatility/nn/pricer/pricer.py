@@ -13,12 +13,6 @@ base class to define the model architectures. Once a network is trained, it can
 produce entire IV surfaces, which can then be used in standard pricing formulas.
 """
 
-__author__ = "Giacomo Bianchi"
-__license__ = "MIT"
-__version__ = "1.0.0"
-__email__ = "giacomo.bianchi.97.bs@gmail.com"
-__creation_date__ = "01/08/2025"
-
 import math
 import torch
 from torch import nn
@@ -30,7 +24,7 @@ from scipy.interpolate import interp1d, PchipInterpolator
 
 from deepLearningVolatility.nn.modules import BlackScholes
 from deepLearningVolatility.instruments import EuropeanOption, BrownianStock
-from deepLearningVolatility.stochastic.stochastic_interface import StochasticProcess
+from deepLearningVolatility.stochastic.stochastic_interface import ProcessFactory, StochasticProcess
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -160,13 +154,13 @@ class VolatilityInterpolator:
         
         # Save the values at the edges for flat extrapolation
         if self.extrapolation == 'flat':
-            # Boundaies for T
+            # Boundaries for T
             self.boundary_values['T_min'] = iv_surface[0, :]  # First row
             self.boundary_values['T_max'] = iv_surface[-1, :]  # Last row
-            # Boundaies for k
+            # Boundaries for k
             self.boundary_values['k_min'] = iv_surface[:, 0]  # First column
             self.boundary_values['k_max'] = iv_surface[:, -1]  # Last column
-            # Angles
+            # Corners
             self.boundary_values['corner_TminKmin'] = iv_surface[0, 0]
             self.boundary_values['corner_TminKmax'] = iv_surface[0, -1]
             self.boundary_values['corner_TmaxKmin'] = iv_surface[-1, 0]
@@ -199,27 +193,27 @@ class VolatilityInterpolator:
         T = np.asarray(T)
         k = np.asarray(k)
         
-        # Gestisci input scalari
+        # Manage Scalar input
         scalar_input = False
         if T.ndim == 0:
             T = T.reshape(1)
             k = k.reshape(1)
             scalar_input = True
         
-        # Crea punti per interpolazione
+        # Create points for interpolation
         points = np.column_stack([T, k])
         
         if self.extrapolation == 'flat':
-            # Applica estrapolazione flat
+            # Apply flat extrapolation
             result = np.zeros(len(points))
             
             for i, (t, k_val) in enumerate(points):
-                # Controlla se il punto è dentro i bounds
+                # Check if the point is inside the Bounds
                 if self.T_min <= t <= self.T_max and self.k_min <= k_val <= self.k_max:
                     # Interpola normalmente
                     result[i] = self.interpolator(points[i:i+1])[0]
                 else:
-                    # Estrapolazione flat
+                    # Flat extrapolation
                     if t < self.T_min and k_val < self.k_min:
                         result[i] = self.boundary_values['corner_TminKmin']
                     elif t < self.T_min and k_val > self.k_max:
@@ -229,18 +223,16 @@ class VolatilityInterpolator:
                     elif t > self.T_max and k_val > self.k_max:
                         result[i] = self.boundary_values['corner_TmaxKmax']
                     elif t < self.T_min:
-                        # Interpola lungo k al T minimo
                         k_idx = np.searchsorted(self.k_grid, k_val)
                         if k_idx == 0:
                             result[i] = self.boundary_values['T_min'][0]
                         elif k_idx >= len(self.k_grid):
                             result[i] = self.boundary_values['T_min'][-1]
                         else:
-                            # Interpolazione lineare
+                            # Linear interpolation
                             w = (k_val - self.k_grid[k_idx-1]) / (self.k_grid[k_idx] - self.k_grid[k_idx-1])
                             result[i] = (1-w) * self.boundary_values['T_min'][k_idx-1] + w * self.boundary_values['T_min'][k_idx]
                     elif t > self.T_max:
-                        # Interpola lungo k al T massimo
                         k_idx = np.searchsorted(self.k_grid, k_val)
                         if k_idx == 0:
                             result[i] = self.boundary_values['T_max'][0]
@@ -250,7 +242,6 @@ class VolatilityInterpolator:
                             w = (k_val - self.k_grid[k_idx-1]) / (self.k_grid[k_idx] - self.k_grid[k_idx-1])
                             result[i] = (1-w) * self.boundary_values['T_max'][k_idx-1] + w * self.boundary_values['T_max'][k_idx]
                     elif k_val < self.k_min:
-                        # Interpola lungo T al k minimo
                         T_idx = np.searchsorted(self.T_grid, t)
                         if T_idx == 0:
                             result[i] = self.boundary_values['k_min'][0]
@@ -260,7 +251,6 @@ class VolatilityInterpolator:
                             w = (t - self.T_grid[T_idx-1]) / (self.T_grid[T_idx] - self.T_grid[T_idx-1])
                             result[i] = (1-w) * self.boundary_values['k_min'][T_idx-1] + w * self.boundary_values['k_min'][T_idx]
                     else:  # k_val > self.k_max
-                        # Interpola lungo T al k massimo
                         T_idx = np.searchsorted(self.T_grid, t)
                         if T_idx == 0:
                             result[i] = self.boundary_values['k_max'][0]
@@ -270,7 +260,7 @@ class VolatilityInterpolator:
                             w = (t - self.T_grid[T_idx-1]) / (self.T_grid[T_idx] - self.T_grid[T_idx-1])
                             result[i] = (1-w) * self.boundary_values['k_max'][T_idx-1] + w * self.boundary_values['k_max'][T_idx]
         else:
-            # Interpolazione standard (RBF gestisce l'estrapolazione)
+            # Standard interpolation (RBF manages extrapolation)
             result = self.interpolator(points)
         
         if scalar_input:
@@ -304,54 +294,54 @@ class SmileRepair:
         iv_smile = np.array(iv_smile)
         logK = np.array(logK)
         
-        # Identifica punti validi (non zero e ragionevoli)
+        # Identify valid points (not zero and reasonable)
         valid_mask = (iv_smile > 0.01) & (iv_smile < 2.0) & ~np.isnan(iv_smile)
         n_valid = valid_mask.sum()
         
         if n_valid < min_valid_points:
-            # Troppo pochi punti validi, usa fallback
+            # Too few valid points, use Fallback
             if n_valid > 0:
-                # Usa la media dei punti validi
+                # Use the average of the valid points
                 fallback_vol = iv_smile[valid_mask].mean()
             return np.full_like(iv_smile, fallback_vol), len(iv_smile) - n_valid
         
         if n_valid == len(iv_smile):
-            # Tutti i punti sono validi
+            # All points are valid
             return iv_smile, 0
         
-        # Interpola usando solo punti validi
+        # Interpolate using only valid points
         logK_valid = logK[valid_mask]
         iv_valid = iv_smile[valid_mask]
         
         try:
             if method == 'pchip':
-                # PCHIP preserva la forma e evita oscillazioni
+                # PCIP preserves the shape and avoids oscillations
                 interpolator = PchipInterpolator(logK_valid, iv_valid, extrapolate=False)
             else:
                 # Linear o cubic
                 interpolator = interp1d(logK_valid, iv_valid, kind=method, 
                                       bounds_error=False, fill_value='extrapolate')
             
-            # Ripara punti non validi
+            # Repair not valid points
             iv_repaired = iv_smile.copy()
             invalid_mask = ~valid_mask
             iv_repaired[invalid_mask] = interpolator(logK[invalid_mask])
             
-            # Gestisci extrapolazione con flat extension
-            # Per punti a sinistra del range valido
+            # Manage extrapolation with flat extension
+            # For points to the left of the valid range
             left_invalid = invalid_mask & (logK < logK_valid.min())
             if left_invalid.any():
                 iv_repaired[left_invalid] = iv_valid[0]
             
-            # Per punti a destra del range valido
+            # For points to the right of the valid range
             right_invalid = invalid_mask & (logK > logK_valid.max())
             if right_invalid.any():
                 iv_repaired[right_invalid] = iv_valid[-1]
             
-            # Assicura valori ragionevoli
+            # Ensures reasonable values
             iv_repaired = np.clip(iv_repaired, 0.01, 2.0)
             
-            # Se ancora ci sono NaN (non dovrebbe succedere), usa fallback
+            # If there are still Nan (it shouldn't happen), use Fallback
             nan_mask = np.isnan(iv_repaired)
             if nan_mask.any():
                 iv_repaired[nan_mask] = fallback_vol
@@ -359,7 +349,7 @@ class SmileRepair:
             return iv_repaired, invalid_mask.sum()
             
         except Exception as e:
-            # Fallback in caso di errore
+            # Fallback in case of error
             print(f"Interpolation failed: {e}, using fallback")
             return np.full_like(iv_smile, fallback_vol), len(iv_smile) - n_valid
     
@@ -400,7 +390,7 @@ class SmileRepair:
             iv_repaired[i, :] = smile_repaired
             total_repaired += n_rep
             
-            if n_rep > n_strikes * 0.5:  # Più del 50% riparato
+            if n_rep > n_strikes * 0.5:  # More than 50% repaired
                 problematic_maturities.append(i)
         
         repair_stats = {
@@ -415,6 +405,7 @@ class SmileRepair:
         
         return iv_repaired, repair_stats
 
+#--------------------------------------------------------------
 class NeuralSurfacePricer(nn.Module):
     """
     Generic interface for neural network–based volatility surface pricers.
@@ -423,16 +414,16 @@ class NeuralSurfacePricer(nn.Module):
     def __init__(self, device='cpu', r=0.0):
         super().__init__()
         self.device = torch.device(device)
-        self.r = r  # Tasso risk-free
+        self.r = r  # Risk-free rate
         
-        # Statistiche di normalizzazione
+        # Normalization statistics
         self.register_buffer('theta_mean', None)
         self.register_buffer('theta_std', None)
         self.register_buffer('iv_mean', None)
         self.register_buffer('iv_std', None)
         
     def set_normalization_stats(self, theta_mean, theta_std, iv_mean, iv_std):
-        """Imposta le statistiche di normalizzazione"""
+        """Set normalization statistics"""
         self.register_buffer('theta_mean', theta_mean.to(self.device))
         self.register_buffer('theta_std', theta_std.to(self.device))
         self.register_buffer('iv_mean', torch.tensor(iv_mean, device=self.device))
@@ -441,7 +432,7 @@ class NeuralSurfacePricer(nn.Module):
     def normalize_theta(self, theta):
         """Normalize model parameters theta"""
         if self.theta_mean is None or self.theta_std is None:
-            return theta  # Se non ci sono stats, restituisci non normalizzato
+            return theta  # If there are no statots, return not normalized
         return (theta - self.theta_mean) / self.theta_std
     
     def denormalize_theta(self, theta_norm):
@@ -469,16 +460,16 @@ class NeuralSurfacePricer(nn.Module):
         raise NotImplementedError
         
     def to(self, device):
-        """Override per gestire correttamente il device"""
+        """Override to correctly manage the device"""
         self.device = device
         return super().to(device)
     
     def save_model_only(self, path: str):
         """Save only model weights, excluding normalization stats."""
-        # Crea una copia dello state dict
+        # Create a copy of the State Dict
         state = self.state_dict()
         
-        # Rimuovi le statistiche di normalizzazione
+        # Remove normalization statistics
         keys_to_remove = []
         for key in state.keys():
             if key in ['theta_mean', 'theta_std', 'iv_mean', 'iv_std', 'T_mean', 'T_std', 'k_mean', 'k_std']:
@@ -487,7 +478,7 @@ class NeuralSurfacePricer(nn.Module):
         for key in keys_to_remove:
             state.pop(key)
         
-        # Salva solo i pesi del modello
+        # Save only the weights of the model
         torch.save(state, path)
     
     def save_full(self, path: str):
@@ -501,14 +492,13 @@ class ZeroAbsorptionHandler:
     Provides utilities for absorbed-path option pricing.
     """
 
-    
     @staticmethod
     def find_absorption_times(S_paths, dt):
         """
         DEPRECATED: Use process.handle_absorption() instead.
         Kept for backward compatibility.
         """
-        # Delega a una implementazione comune
+        # Delegation to a common implementation
         zero_mask = S_paths <= 1e-10
         cumsum = zero_mask.cumsum(dim=1)
         first_zero_mask = (cumsum == 1) & zero_mask
@@ -525,8 +515,7 @@ class ZeroAbsorptionHandler:
         return absorption_times, absorbed_mask
     
     @staticmethod
-    def compute_barrier_adjusted_price_vectorized(S_paths, K, T, r, dt, 
-                                                  process=None):
+    def compute_barrier_adjusted_price_vectorized(S_paths, K, T, r, dt, process=None):
         """
         Computes option price with zero-barrier adjustment.
         
@@ -545,27 +534,27 @@ class ZeroAbsorptionHandler:
 
         n_paths = S_paths.shape[0]
         
-        # Usa il processo se fornito, altrimenti fallback all'implementazione locale
+        # Use the process if provided, otherwise Fallbacks to local implementation
         if process and hasattr(process, 'handle_absorption'):
             absorption_times, absorbed_mask = process.handle_absorption(S_paths, dt)
         else:
             absorption_times, absorbed_mask = ZeroAbsorptionHandler.find_absorption_times(S_paths, dt)
         
-        # Paths sopravvissuti
+        # Survived paths
         survived_mask = ~absorbed_mask
         n_survived = survived_mask.sum().item()
         
         if n_survived == 0:
             return 0.0, 0
         
-        # Calcola payoff per TUTTI i paths (0 per quelli assorbiti)
+        # Calculate Payoff for all Paths (0 for absorbed ones)
         ST = S_paths[:, -1]
         payoff = (ST - K).clamp(min=0.0)
         
-        # Azzera il payoff per i paths assorbiti
+        # Reset the payoff for absorbed paths
         payoff = payoff * survived_mask.float()
         
-        # Prezzo medio su tutti i paths
+        # Average price on all paths
         price = payoff.mean() * torch.exp(torch.tensor(-r * T))
         
         return price.item(), n_survived
@@ -589,8 +578,6 @@ class ZeroAbsorptionHandler:
         iv_list: List of implied volatilities
         absorbed_ratios: List of absorption ratios
         """
-        from deepLearningVolatility.nn import BlackScholes
-        from deepLearningVolatility.instruments import EuropeanOption, BrownianStock
         
         iv_list = []
         absorbed_ratios = []
@@ -598,7 +585,7 @@ class ZeroAbsorptionHandler:
         for S_paths, K, T in zip(S_paths_list, K_list, T_list):
             n_paths = S_paths.shape[0]
             
-            # Calcola prezzo con gestione absorption
+            # Calculate price with apsorption management
             price, n_survived = ZeroAbsorptionHandler.compute_barrier_adjusted_price_vectorized(
                 S_paths, K, T, r, dt, process
             )
@@ -606,14 +593,14 @@ class ZeroAbsorptionHandler:
             absorbed_ratio = 1.0 - (n_survived / n_paths)
             absorbed_ratios.append(absorbed_ratio)
             
-            # Calcola IV
+            # Calculate IV
             if price > 1e-10 and absorbed_ratio < 0.95:
                 try:
                     bs = BlackScholes(
                         EuropeanOption(
                             BrownianStock(),
-                            strike=K,
-                            maturity=T
+                            strike=float(K),
+                            maturity=float(T)
                         )
                     )
                     iv = bs.implied_volatility(
@@ -623,7 +610,7 @@ class ZeroAbsorptionHandler:
                     )
                     iv_list.append(float(iv))
                 except:
-                    # Stima volatilità dai returns dei path sopravvissuti
+                    # Estimation of volatility from the Returns of the surviving paths
                     if n_survived > 10:
                         survived_mask = S_paths[:, -1] > 0
                         S_survived = S_paths[survived_mask]
@@ -640,6 +627,7 @@ class ZeroAbsorptionHandler:
         
         return iv_list, absorbed_ratios
 
+#--------------------------------------------------------------
 class GridNetworkPricer(NeuralSurfacePricer):
     """Models the entire implied volatility surface for a given set of parameters.
 
@@ -684,7 +672,7 @@ class GridNetworkPricer(NeuralSurfacePricer):
         self.dt = dt
         self.out_dim = len(self.Ts) * len(self.logKs)
         
-        # Rete neurale con architettura dinamica basata su num_params
+        # Neural network with dynamic architecture based on Num_params
         self.net = build_network(
             process.num_params,
             self.out_dim, 
@@ -692,7 +680,7 @@ class GridNetworkPricer(NeuralSurfacePricer):
             activation
         ).to(device)
         
-        # Interpolatore
+        # Interpolator
         self.interpolator = VolatilityInterpolator(
             method=interpolation_method,
             extrapolation=extrapolation
@@ -713,17 +701,17 @@ class GridNetworkPricer(NeuralSurfacePricer):
                     adaptive_dt: bool = True,
                     control_variate: bool = True,
                     chunk_size: int = None,
-                    handle_absorption: bool = True) -> torch.Tensor:
+                    handle_absorption: bool = True,
+                    q: float = 0.0) -> torch.Tensor:
         """
-        Calcola IV su griglia via Monte Carlo.
-        Versione aggiornata che usa l'interfaccia process.
+        Calculate IV on grid via Monte Carlo.
         """
-        # Valida parametri
+        # Validate parameters
         is_valid, error_msg = self.process.validate_theta(theta)
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Determina dt adattivo
+        # Determine adaptive dt
         T_min = self.Ts.min().item()
         if adaptive_dt:
             if T_min <= 0.1:
@@ -739,21 +727,21 @@ class GridNetworkPricer(NeuralSurfacePricer):
         if chunk_size is None:
             chunk_size = 50000 if self.device.type == 'cuda' else 20000
         
-        # Inizializza griglia risultati
+        # Initialize grid results
         iv = torch.zeros(len(self.Ts), len(self.logKs), device=self.device)
         
         if handle_absorption and self.process.supports_absorption:
             absorption_stats = torch.zeros(len(self.Ts), len(self.logKs), device=self.device)
         
-        # Processa ogni scadenza
+        # Processes each tenor
         for iT, T in enumerate(self.Ts):
             T_val = T.item()
             disc = math.exp(-self.r * T_val)
             
-            # Step necessari
+            # Necessary steps
             n_steps_T = int(round(T_val / dt_base)) + 1
             
-            # Numero di paths adattivo
+            # Adaptive paths number
             n_paths_T = n_paths
             if adaptive_paths:
                 if T_val <= 0.05:
@@ -763,10 +751,11 @@ class GridNetworkPricer(NeuralSurfacePricer):
                 elif T_val <= 0.25:
                     n_paths_T = int(n_paths * 1.5)
             
-            # Pre-calcola tutti gli strikes per questa maturità
-            K_values = spot * torch.exp(self.logKs)
+            # Pre-calculate all the strikes for this maturity (forward-invariant)
+            F_val = spot * math.exp((self.r - q) * T_val)
+            K_values = torch.tensor(F_val, device=self.device) * torch.exp(self.logKs)
             
-            # Inizializza accumulatori per statistics
+            # Initialize accumulators for statistics
             payoff_sums = torch.zeros(len(self.logKs), device=self.device)
             n_valid_per_strike = torch.zeros(len(self.logKs), device=self.device)
             
@@ -777,13 +766,12 @@ class GridNetworkPricer(NeuralSurfacePricer):
             
             total_paths_processed = 0
             
-            # Processa in chunks
             n_chunks = (n_paths_T + chunk_size - 1) // chunk_size
             
             for chunk_idx in range(n_chunks):
                 current_chunk_size = min(chunk_size, n_paths_T - chunk_idx * chunk_size)
                 
-                # Simula usando il processo
+                # Simulate using the process
                 sim_result = self.process.simulate(
                     theta=theta,
                     n_paths=current_chunk_size,
@@ -796,26 +784,26 @@ class GridNetworkPricer(NeuralSurfacePricer):
                 
                 S_chunk = sim_result.spot
                 
-                # Gestisci absorption se supportato
+                # Manage apsorption if supported
                 if handle_absorption and self.process.supports_absorption:
-                    # Il metodo handle_absorption esiste sempre in BaseStochasticProcess
+                    # The handle_absorption method always exists in BaseStochasticProcess
                     _, absorbed_mask = self.process.handle_absorption(S_chunk, dt_base)
                     survived_mask = ~absorbed_mask
                     n_survived_chunk = survived_mask.sum()
                 else:
-                    # Tutti i paths sopravvivono
+                    # All paths survive
                     survived_mask = torch.ones(current_chunk_size, dtype=torch.bool, device=self.device)
                     n_survived_chunk = current_chunk_size
                 
                 if n_survived_chunk > 0:
-                    # Estrai ST solo per i path sopravvissuti
+                    # Extract ST only for surviving paths
                     ST_chunk = S_chunk[:, -1]
                     ST_survived = ST_chunk[survived_mask]
                     
-                    # Calcola payoff per tutti gli strikes
+                    # Calculate payoffs for all strikes
                     payoffs = (ST_survived.unsqueeze(1) - K_values.unsqueeze(0)).clamp(min=0.0)
                     
-                    # Accumula statistiche
+                    # Accumulate statistics
                     payoff_sums += payoffs.sum(dim=0)
                     n_valid_per_strike += n_survived_chunk
                     
@@ -830,28 +818,29 @@ class GridNetworkPricer(NeuralSurfacePricer):
                 
                 total_paths_processed += current_chunk_size
                 
-                # Libera memoria
+                # Free memory
                 del S_chunk
                 if n_survived_chunk > 0:
                     del ST_chunk, ST_survived, payoffs
                 if self.device.type == 'cuda':
                     torch.cuda.empty_cache()
             
-            # Calcola IV per tutti gli strikes
+            # Calculate IV for all strikes
             for jK, k in enumerate(self.logKs):
-                K = K_values[jK]
+                # Strike related to the forward: K = F * exp(k)
+                K = F_val * math.exp(k.item())
                 n_valid = n_valid_per_strike[jK].item()
                 
-                # Fallback se nessun path è sopravvissuto
+                # Fallback if no path survived
                 if n_valid == 0:
-                    # Usa volatilità di default basata su parametri
+                    # Use parameter-based default volatility
                     default_vol = self._get_default_volatility(theta)
                     iv[iT, jK] = default_vol
                     if handle_absorption and self.process.supports_absorption:
                         absorption_stats[iT, jK] = 1.0
                     continue
                 
-                # Media normalizzata sul numero totale di paths
+                # Normalized mean over the total number of paths
                 payoff_mean = payoff_sums[jK] / total_paths_processed
                 
                 # Control variate
@@ -869,8 +858,9 @@ class GridNetworkPricer(NeuralSurfacePricer):
                 else:
                     price_call = payoff_mean * disc
                 
-                # Assicura prezzo sopra intrinseco
-                intrinsic_value = max(0, spot - K.item() * disc)
+                # Ensure price above the intrinsic (PV di (F-K)^+)
+                K = F_val * math.exp(k.item())
+                intrinsic_value = disc * max(0.0, F_val - K)
                 price_call = max(price_call, intrinsic_value + price_floor)
                 
                 # Absorption ratio
@@ -878,13 +868,13 @@ class GridNetworkPricer(NeuralSurfacePricer):
                     absorbed_ratio = 1.0 - (n_valid / total_paths_processed)
                     absorption_stats[iT, jK] = absorbed_ratio
                 
-                # Calcola IV
+                # Calculate IV
                 if price_call > 1e-10:
                     try:
                         bs = BlackScholes(
                             EuropeanOption(
                                 BrownianStock(),
-                                strike=K.item(),
+                                strike=float(K),
                                 maturity=float(T)
                             )
                         )
@@ -898,7 +888,7 @@ class GridNetworkPricer(NeuralSurfacePricer):
                 else:
                     iv[iT, jK] = self._get_default_volatility(theta)
         
-        # Post-processing con smile repair
+        # Post-processing with smile repair
         if self.enable_smile_repair:
             fallback_vol = self._get_default_volatility(theta)
             iv_repaired, repair_stats = SmileRepair.repair_surface(
@@ -924,10 +914,10 @@ class GridNetworkPricer(NeuralSurfacePricer):
     
     def _get_default_volatility(self, theta: torch.Tensor) -> float:
         """
-        Ottiene una volatilità di default basata sui parametri del modello.
+        Gets a default volatility based on model parameters.
         """
-        # Per Rough Bergomi, usa sqrt(xi0)
-        # Per altri modelli, questa logica dovrà essere adattata
+        # For Rough Bergomi, use sqrt(xi0)
+        # For other models, this logic will need to be adapted
         if hasattr(self.process, 'param_info'):
             param_info = self.process.param_info
             if 'xi0' in param_info.names:
@@ -937,10 +927,10 @@ class GridNetworkPricer(NeuralSurfacePricer):
                 sigma_idx = param_info.names.index('sigma')
                 return theta[sigma_idx].item()
         
-        # Default generale
+        # General Default
         return 0.2
     
-    # Tutti gli altri metodi rimangono invariati...
+    # All other methods remain unchanged...
     def forward(self, theta: torch.Tensor) -> torch.Tensor:
         """Forward pass della rete."""
         batch_size = theta.shape[0]
@@ -957,9 +947,9 @@ class GridNetworkPricer(NeuralSurfacePricer):
             batch_size: int = 512,
             lr: float = 1e-3):
         """
-        Fit della rete su grid-based datasets.
+        Network fit on grid-based datasets.
         """
-        # Appiattisco la superficie
+        # Flatten the surface
         N_train = len(theta_train)
         iv_train_flat = iv_train.view(N_train, self.out_dim)
         
@@ -1025,36 +1015,37 @@ class GridNetworkPricer(NeuralSurfacePricer):
             self.save("best_grid_weights.pt") 
             print(f"Loaded best weights (Val Loss = {best_val_loss:.6f})")
     
-    def price_iv(self, theta: torch.Tensor, denormalize_output: bool = True) -> torch.Tensor:
+    def price_iv(self, theta: torch.Tensor,
+                 denormalize_output: bool = True,
+                 inputs_normalized: bool = False) -> torch.Tensor:
         """
-        Calcola la superficie IV per i parametri theta dati.
-        
+        Calculates the IV surface for the given theta parameters.
+
         Args:
-            theta: parametri del modello (NON normalizzati)
-            denormalize_output: se True, denormalizza l'output
+            theta: model parameters
+            denormalize_output: If True, denormalizes the output
+            inputs_normalized: set True if `theta` is already normalized
         """
         self.net.eval()
         
-        # Normalizza l'input se abbiamo le statistiche
-        theta_norm = self.normalize_theta(theta)
+        # Use as-is if inputs are already normalized, otherwise normalize
+        theta_for_forward = theta if inputs_normalized else self.normalize_theta(theta)
+        iv_surface_norm = self.forward(theta_for_forward)
         
-        # Forward pass con input normalizzato
-        iv_surface_norm = self.forward(theta_norm)
-        
-        # Denormalizza l'output se richiesto
+        # Denormalize output if required
         if denormalize_output:
             iv_surface = self.denormalize_iv(iv_surface_norm)
         else:
             iv_surface = iv_surface_norm
         
-        # Se richiesto un singolo theta, fitta l'interpolatore
+        # If a single theta is required, fit the interpolator
         if theta.shape[0] == 1 and not self._interpolator_fitted:
             self._fit_interpolator(iv_surface[0].detach())
         
         return iv_surface
     
     def _fit_interpolator(self, iv_surface: torch.Tensor):
-        """Fitta l'interpolatore su una superficie IV."""
+        """Fit the interpolator onto a surface IV."""
         T_np = self.Ts.cpu().numpy()
         k_np = self.logKs.cpu().numpy()
         iv_np = iv_surface.cpu().numpy()
@@ -1064,18 +1055,18 @@ class GridNetworkPricer(NeuralSurfacePricer):
     
     def interpolate_iv(self, T, k, theta=None):
         """
-        Interpola IV per punti arbitrari (T, k).
-        
+        Interpolate IV for arbitrary points (T, k).
+
         Args:
-            T: maturità (scalare o array)
-            k: log-moneyness (scalare o array)
-            theta: parametri del modello (opzionale se già fittato)
-            
+            T: maturity (scalar or array)
+            k: log-moneyness (scalar or array)
+            theta: model parameters (optional if already fitted)
+
         Returns:
-            IV interpolata
+            Interpolated IV
         """
         if theta is not None:
-            # Calcola la superficie per questo theta
+            # Calculate the surface area for this theta
             iv_surface = self.price_iv(theta.unsqueeze(0) if theta.dim() == 1 else theta)
             self._fit_interpolator(iv_surface[0])
         
@@ -1083,12 +1074,10 @@ class GridNetworkPricer(NeuralSurfacePricer):
             raise ValueError("Interpolator not fitted. Provide theta or call price_iv first.")
         
         return self.interpolator(T, k)
-        return self.interpolator(T, k)
     
-    # Aggiungi questo metodo alla classe GridNetworkPricer
     def get_repair_statistics(self):
         """
-        Ritorna le statistiche dell'ultima riparazione smile
+        Returns the statistics of the last repair.
         """
         if self.last_repair_stats is None:
             return "No repair statistics available. Run _mc_iv_grid first."
@@ -1103,11 +1092,11 @@ class GridNetworkPricer(NeuralSurfacePricer):
     
     def save(self, path: str, include_norm_stats: bool = False):
         """
-        Salva i pesi del modello.
-        
+        Saves the model weights.
+
         Args:
-            path: percorso del file
-            include_norm_stats: se True, include le statistiche di normalizzazione
+            path: file path
+            include_norm_stats: If True, includes normalization statistics
         """
         if include_norm_stats:
             self.save_full(path)
@@ -1118,26 +1107,26 @@ class GridNetworkPricer(NeuralSurfacePricer):
     def load(cls, path: str, maturities: torch.Tensor, logK: torch.Tensor, 
              load_norm_stats: bool = False, **kwargs):
         """
-        Carica un modello salvato.
-        
+        Load a saved model.
+
         Args:
-            path: percorso del file
-            maturities: array delle maturità
-            logK: array dei log-moneyness
-            load_norm_stats: se True, prova a caricare anche le statistiche di normalizzazione
-            **kwargs: altri parametri per il costruttore
+            path: file path
+            maturities: array of maturities
+            logK: array of log-moneyness
+            load_norm_stats: if True, also attempts to load normalization statistics
+            **kwargs: other constructor parameters
         """
         device = kwargs.get('device', maturities.device)
         obj = cls(maturities, logK, **kwargs)
         
-        # Carica lo state dict
+        # Load the state dict
         sd = torch.load(path, map_location=device, weights_only=True)
         
         if load_norm_stats:
-            # Carica tutto incluse le statistiche se presenti
+            # Load everything including statistics if any
             obj.load_state_dict(sd, strict=False)
         else:
-            # Carica solo i pesi del modello
+            # Load model weights only
             model_state = {k: v for k, v in sd.items() 
                           if k not in ['theta_mean', 'theta_std', 'iv_mean', 'iv_std']}
             obj.load_state_dict(model_state, strict=False)
@@ -1147,12 +1136,27 @@ class GridNetworkPricer(NeuralSurfacePricer):
     
     
 class PointwiseNetworkPricer(NeuralSurfacePricer):
-    """
-    Versione aggiornata di PointwiseNetworkPricer che supporta qualsiasi StochasticProcess.
-    Calcola IV per singoli punti (theta, T, k).
+    """Models implied volatility for individual, arbitrary points.
+
+    This class implements a neural pricer that learns a direct mapping from a
+    combined input of model parameters and option characteristics to a single
+    implied volatility value: `f(theta, T, K) -> IV`.
+
+    This pointwise approach offers maximum flexibility, as it is not constrained
+    to a predefined grid of maturities and strikes. It is particularly useful for
+    pricing exotic options or options with non-standard tenors and for creating
+    datasets based on randomized grids, as proposed by Baschetti et al. The
+    trade-off for this flexibility is that generating a full surface requires
+    multiple forward passes of the network, one for each point.
+
+    Attributes:
+        process (StochasticProcess): The underlying stochastic model used for
+            generating training data.
+        net (nn.Module): The neural network that maps the combined input of
+            parameters, time-to-maturity, and log-moneyness to an IV point.
     """
     def __init__(self,
-                 process: StochasticProcess,  # <-- CAMBIATO
+                 process: StochasticProcess,
                  hidden_layers: list = [128],
                  activation: str = 'ReLU',
                  dt: float = 1/365,
@@ -1162,12 +1166,12 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
                  smile_repair_method: str = 'pchip'):
         super().__init__(device=device, r=r)
         
-        self.process = process  # <-- CAMBIATO
+        self.process = process
         self.dt = dt
         
-        # Rete: num_params + 2 (T, k) -> 1 output
+        # Net: num_params + 2 (T, k) -> 1 output
         self.net = build_network(
-            process.num_params + 2,  # <-- CAMBIATO
+            process.num_params + 2,
             1, 
             hidden_layers, 
             activation
@@ -1188,28 +1192,29 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
                      use_antithetic: bool = True,
                      adaptive_dt: bool = True,
                      control_variate: bool = True,
-                     chunk_size: int = None) -> float:
+                     chunk_size: int = None,
+                     q: float = 0.0) -> float:
         """
-        Calcola IV per un singolo punto via Monte Carlo con variance reduction.
-        
+        Calculate IV for a single point via Monte Carlo with variance reduction.
+
         Args:
-            theta: parametri del modello (H, eta, rho, xi0)
-            T: maturità
+            theta: model parameters (H, eta, rho, xi0)
+            T: maturity
             logK: log-moneyness
-            n_paths: numero di paths
-            spot: prezzo spot iniziale
-            price_floor: prezzo minimo per stabilità numerica
-            use_antithetic: usa variabili antitetiche
-            adaptive_dt: usa dt più piccolo per scadenze brevi
-            control_variate: usa control variate basato su Black-Scholes
-            chunk_size: processa il MC in chunck per gestire la memoria limitata
+            n_paths: number of paths
+            spot: initial spot price
+            price_floor: minimum price for numerical stability
+            use_antithetic: use antithetical variables
+            adaptive_dt: use smaller dt for short maturities
+            control_variate: use Black-Scholes-based control variate
+            chunk_size: process the MC in chunks to accommodate limited memory
         """
-        # Valida parametri
+        # Validate parameters
         is_valid, error_msg = self.process.validate_theta(theta)
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Determina dt
+        # Determine dt
         if adaptive_dt:
             if T <= 0.1:
                 dt_use = T / 100
@@ -1222,11 +1227,11 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
         
         n_steps = max(2, int(math.ceil(T / dt_use)))
         
-        # Determina chunk_size
+        # Determine chunk_size
         if chunk_size is None:
             chunk_size = 10000 if self.device.type == 'cuda' else 20000
         
-        # Accumula statistiche
+        # Accumulate statistics
         payoff_sum = 0.0
         dS_sum = 0.0
         payoff_dS_sum = 0.0
@@ -1235,16 +1240,16 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
         n_processed = 0
         n_valid_total = 0
         
-        K = spot * math.exp(logK)
+        # Forward-invariant strike: K = F * exp(k), with F = spot * exp((r - q) T)
+        F = spot * math.exp((self.r - q) * T)
+        K = F * math.exp(logK)
         disc = math.exp(-self.r * T)
         
-        # Processa in chunks
         n_chunks = (n_paths + chunk_size - 1) // chunk_size
         
         for chunk_idx in range(n_chunks):
             current_chunk_size = min(chunk_size, n_paths - chunk_idx * chunk_size)
             
-            # Simula usando il processo
             sim_result = self.process.simulate(
                 theta=theta,
                 n_paths=current_chunk_size,
@@ -1258,7 +1263,7 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
             S_chunk = sim_result.spot
             ST_chunk = S_chunk[:, -1]
             
-            # Gestisci absorption se supportato
+            # Manage absorption if supported
             if self.process.supports_absorption:
                 valid_mask = ST_chunk > 0
                 n_valid = valid_mask.sum().item()
@@ -1270,7 +1275,7 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
                 ST_valid = ST_chunk
                 n_valid = current_chunk_size
             
-            # Calcola payoff e accumula statistiche
+            # Calculate payoffs and accumulate statistics
             payoff = (ST_valid - K).clamp(min=0.0)
             dS = ST_valid - spot
             
@@ -1285,16 +1290,16 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
             n_processed += current_chunk_size
             n_valid_total += n_valid
             
-            # Libera memoria
+            # Free memory
             del S_chunk, ST_chunk
             if self.device.type == 'cuda':
                 torch.cuda.empty_cache()
         
-        # Se nessun path valido, ritorna volatilità di default
+        # If no valid path, return default volatility
         if n_valid_total == 0:
             return self._get_default_volatility(theta)
         
-        # Calcola prezzo finale normalizzando sul numero totale di paths processati
+        # Calculate final price by normalizing on the total number of paths processed
         payoff_mean = payoff_sum / n_processed
         
         if control_variate and n_processed > 1:
@@ -1311,18 +1316,18 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
         else:
             price_call = payoff_mean * disc
         
-        # Assicura prezzo sopra intrinseco
-        intrinsic_value = max(0, spot - K * disc)
+        # Ensure price above the intrinsic (PV di (F-K)^+)
+        intrinsic_value = disc * max(0.0, F - K)
         price_call = max(price_call, intrinsic_value + price_floor)
         
-        # Calcola IV
+        # Calculate IV
         if price_call > 1e-10:
             try:
                 bs = BlackScholes(
                     EuropeanOption(
                         BrownianStock(),
-                        strike=K,
-                        maturity=T
+                        strike=float(K),
+                        maturity=float(T)
                     )
                 )
                 return float(bs.implied_volatility(
@@ -1337,22 +1342,22 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
     
     def _get_default_volatility(self, theta: torch.Tensor) -> float:
         """
-        Ottiene una volatilità di default basata sui parametri del modello.
+        Gets a default volatility based on model parameters.
         """
         if hasattr(self.process, 'param_info'):
             param_info = self.process.param_info
-            # Cerca parametri volatilità-related
+            # Search for volatility-related parameters
             for vol_name in ['xi0', 'sigma', 'theta']:
                 if vol_name in param_info.names:
                     idx = param_info.names.index(vol_name)
                     value = theta[idx].item()
-                    # Per xi0 e theta (varianza), prendi sqrt
+                    # For xi0 and theta (variance), take sqrt
                     if vol_name in ['xi0', 'theta']:
                         return math.sqrt(value)
                     else:
                         return value
         
-        # Default generale
+        # General default
         return 0.2
     
     @torch.no_grad()
@@ -1366,29 +1371,31 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
                     use_antithetic: bool = True,
                     adaptive_dt: bool = True,
                     control_variate: bool = True,
-                    chunk_size: int = None) -> torch.Tensor:
+                    chunk_size: int = None,
+                    q: float = 0.0) -> torch.Tensor:
         """
-        Calcola IV su griglia via Monte Carlo.
-        Versione aggiornata per supportare processi generici.
+        Calculate IV on grid via Monte Carlo.
         """
-        # Valida parametri
+        # Validate parameters
         is_valid, error_msg = self.process.validate_theta(theta)
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Determina chunk_size se non specificato
+        # Determines chunk_size if not specified
         if chunk_size is None:
             chunk_size = 10000 if self.device.type == 'cuda' else 20000
         
-        # Inizializza griglia risultati
+        # Initialize results grid
         iv = torch.zeros(len(maturities), len(logK), device=self.device)
         
-        # Processa ogni scadenza separatamente
+        # Process each deadline separately
         for iT, T in enumerate(maturities):
             T_val = T.item()
             disc = math.exp(-self.r * T_val)
+            # Forward for this maturity
+            F_val = spot * math.exp((self.r - q) * T_val)
             
-            # Determina dt per questa scadenza
+            # Determine dt for this deadline
             if adaptive_dt:
                 if T_val <= 0.1:
                     dt_use = T_val / 100
@@ -1401,19 +1408,18 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
             
             n_steps = max(2, int(math.ceil(T_val / dt_use)))
             
-            # Accumula statistiche per ogni strike
+            # Accumulate statistics for each strike
             strike_stats = {jK: {'payoff_sum': 0.0, 'dS_sum': 0.0, 'payoff_dS_sum': 0.0,
                                 'payoff_sq_sum': 0.0, 'dS_sq_sum': 0.0, 
                                 'n_processed': 0, 'n_valid': 0}
                            for jK in range(len(logK))}
             
-            # Processa in chunks
+            # Process in chunks
             n_chunks = (n_paths + chunk_size - 1) // chunk_size
             
             for chunk_idx in range(n_chunks):
                 current_chunk_size = min(chunk_size, n_paths - chunk_idx * chunk_size)
                 
-                # Simula usando il processo
                 sim_result = self.process.simulate(
                     theta=theta,
                     n_paths=current_chunk_size,
@@ -1427,7 +1433,7 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
                 S_chunk = sim_result.spot
                 ST_chunk = S_chunk[:, -1]
                 
-                # Gestisci absorption
+                # Manage absorption
                 if self.process.supports_absorption:
                     valid_mask = ST_chunk > 0
                 else:
@@ -1435,9 +1441,10 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
                 
                 n_valid_chunk = valid_mask.sum().item()
                 
-                # Accumula statistiche per ogni strike
+                # Accumulate statistics for each strike
                 for jK, k in enumerate(logK):
-                    K = spot * math.exp(k.item())
+                    # Strike relative to the forward: K = F * exp(k)
+                    K = F_val * math.exp(k.item())
                     
                     if n_valid_chunk > 0:
                         ST_valid = ST_chunk[valid_mask]
@@ -1457,12 +1464,12 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
                     
                     stats['n_processed'] += current_chunk_size
                 
-                # Libera memoria
+                # Free memory
                 del S_chunk, ST_chunk
                 if self.device.type == 'cuda':
                     torch.cuda.empty_cache()
             
-            # Calcola IV per ogni strike
+            # Calculate IV for each strike
             for jK, k in enumerate(logK):
                 stats = strike_stats[jK]
                 n_total = stats['n_processed']
@@ -1489,24 +1496,24 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
                 else:
                     price_call = payoff_mean * disc
                 
-                # Assicura prezzo sopra intrinseco
-                K = spot * math.exp(k.item())
-                intrinsic_value = max(0, spot - K * disc)
+                # Ensure price above the intrinsic (PV di (F-K)^+)
+                K = F_val * math.exp(k.item())
+                intrinsic_value = disc * max(0.0, F_val - K)
                 price_call = max(price_call, intrinsic_value + price_floor)
                 
-                # Warning se molti paths assorbiti
+                # Warning if many paths absorbed
                 if self.process.supports_absorption:
                     absorption_ratio = 1.0 - (n_valid / n_total)
                     if absorption_ratio > 0.2:
                         print(f"Warning: {absorption_ratio:.1%} paths absorbed at T={T_val:.3f}, K={K:.3f}")
                 
-                # Calcola IV
+                # Calculate IV
                 if price_call > 1e-10:
                     try:
                         bs = BlackScholes(
                             EuropeanOption(
                                 BrownianStock(),
-                                strike=K,
+                                strike=float(K),
                                 maturity=float(T)
                             )
                         )
@@ -1570,7 +1577,7 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
             epochs: int = 30,
             batch_size: int = 4096,
             lr: float = 1e-3):
-        """Train su dataset point-wise."""
+        """Train on point-wise datasets."""
         
         train_loader = DataLoader(
             TensorDataset(theta_train, T_train, k_train, iv_train),
@@ -1639,34 +1646,35 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
             print(f"Loaded best weights (Val Loss = {best_val_loss:.6f})")
     
     def set_pointwise_normalization_stats(self, T_mean, T_std, k_mean, k_std):
-        """Imposta le statistiche di normalizzazione"""
+        """Set normalization statistics"""
         self.register_buffer('T_mean', T_mean.to(self.device))
         self.register_buffer('T_std', T_std.to(self.device))
         self.register_buffer('k_mean', torch.tensor(k_mean, device=self.device))
         self.register_buffer('k_std', torch.tensor(k_std, device=self.device))
     
     def normalize_T(self, T):
-        """Normalizza le maturità"""
+        """Normalize maturity"""
         if self.T_mean is None or self.T_std is None:
             return T
         return (T - self.T_mean) / self.T_std
     
     def normalize_k(self, k):
-        """Normalizza il log-moneyness"""
+        """Normalize log-moneyness"""
         if self.k_mean is None or self.k_std is None:
             return k
         return (k - self.k_mean) / self.k_std
 
     def price_iv_grid(self, theta: torch.Tensor, maturities: torch.Tensor, 
-                  logK: torch.Tensor, denormalize_output: bool = True) -> torch.Tensor:
+                  logK: torch.Tensor, denormalize_output: bool = True,
+                  inputs_normalized: bool = False) -> torch.Tensor:
         """
-        Calcola griglia completa di IV.
-        
+        Computes full IV grid.
+
         Args:
-            theta: parametri del modello (NON normalizzati)
-            maturities: array di maturità (NON normalizzate)
-            logK: array di log-moneyness (NON normalizzati)
-            denormalize_output: se True, denormalizza l'output
+            theta: model parameters (NOT normalized)
+            maturities: maturity array (NOT normalized)
+            logK: log-moneyness array (NOT normalized)
+            inputs_normalized: set True if `theta` is already normalized
         """
         self.net.eval()
         
@@ -1674,7 +1682,7 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
         T_len = maturities.size(0)
         K_len = logK.size(0)
         
-        # Crea mesh
+        # Create mesh
         theta_exp = theta.view(B, 1, 1, 4).expand(B, T_len, K_len, 4)
         mat_mesh, k_mesh = torch.meshgrid(maturities, logK, indexing='ij')
         mat_exp = mat_mesh.unsqueeze(0).expand(B, T_len, K_len)
@@ -1685,35 +1693,42 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
         T_flat = mat_exp.reshape(-1)
         k_flat = k_exp.reshape(-1)
         
-        # Forward con normalizzazione/denormalizzazione gestita da price_iv
+        # Forward with normalization/denormalization managed by price_iv
         with torch.no_grad():
-            iv_flat = self.price_iv(theta_flat, T_flat, k_flat, denormalize_output)
+            iv_flat = self.price_iv(theta_flat, T_flat, k_flat,
+                                    denormalize_output=denormalize_output,
+                                    inputs_normalized=inputs_normalized)
         
         return iv_flat.view(B, T_len, K_len)
     
     
     def price_iv(self, theta: torch.Tensor, T: torch.Tensor, k: torch.Tensor, 
-                 denormalize_output: bool = True) -> torch.Tensor:
+                 denormalize_output: bool = True,
+                 inputs_normalized: bool = False) -> torch.Tensor:
         """
-        Calcola IV per punti specifici (theta, T, k).
-        
+        Calculate IV for specific points (theta, T, k).
+
         Args:
-            theta: parametri del modello (NON normalizzati)
-            T: maturità (NON normalizzata)
-            k: log-moneyness (NON normalizzato)
-            denormalize_output: se True, denormalizza l'output
+            theta: model parameters
+            T: maturity
+            k: log-moneyness
+            denormalize_output: if True, denormalizes the output
+            inputs_normalized: set True if (theta, T, k) are already normalized
         """
         self.net.eval()
         
-        # Normalizza tutti gli input
-        theta_norm = self.normalize_theta(theta)
-        T_norm = self.normalize_T(T)
-        k_norm = self.normalize_k(k)
+        if inputs_normalized:
+            # Use tensors as-is (already normalized)
+            iv_norm = self.forward(theta, T, k)
+        else:
+            # Normalize then forward
+            iv_norm = self.forward(
+                self.normalize_theta(theta),
+                self.normalize_T(T),
+                self.normalize_k(k)
+            )
         
-        # Forward pass con input normalizzati
-        iv_norm = self.forward(theta_norm, T_norm, k_norm)
-        
-        # Denormalizza l'output se richiesto
+        # Denormalize output if required
         if denormalize_output:
             return self.denormalize_iv(iv_norm)
         else:
@@ -1722,7 +1737,7 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
     
     def get_repair_statistics(self):
         """
-        Ritorna le statistiche dell'ultima riparazione smile
+        Returns statistics of the last smile repair
         """
         if self.last_repair_stats is None:
             return "No repair statistics available. Run _mc_iv_grid first."
@@ -1737,11 +1752,11 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
 
     def save(self, path: str, include_norm_stats: bool = False):
         """
-        Salva i pesi del modello.
-        
+        Saves the model weights.
+
         Args:
-            path: percorso del file
-            include_norm_stats: se True, include le statistiche di normalizzazione
+            path: file path
+            include_norm_stats: If True, includes normalization statistics
         """
         if include_norm_stats:
             self.save_full(path)
@@ -1752,33 +1767,32 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
     def load(cls, path: str, process: Union[str, StochasticProcess], 
              load_norm_stats: bool = False, **kwargs):
         """
-        Carica un modello salvato.
-        
+        Load a saved model.
+
         Args:
-            path: percorso del file
-            process: nome del processo o istanza StochasticProcess
-            load_norm_stats: se True, prova a caricare anche le statistiche
-            **kwargs: parametri per il costruttore
+            path: file path
+            process: process name or StochasticProcess instance
+            load_norm_stats: if True, also attempts to load statistics
+            **kwargs: constructor parameters
         """
         device = kwargs.get('device', 'cpu')
         
-        # Crea processo se passato come stringa
+        # Create process if passed as a string
         if isinstance(process, str):
-            from .stochastic_interface import ProcessFactory
             process_obj = ProcessFactory.create(process)
         else:
             process_obj = process
         
         obj = cls(process=process_obj, **kwargs)
         
-        # Carica lo state dict
+        # Load the state dict
         sd = torch.load(path, map_location=device, weights_only=True)
         
         if load_norm_stats:
-            # Carica tutto incluse le statistiche se presenti
+            # Load everything including statistics if any
             obj.load_state_dict(sd, strict=False)
         else:
-            # Carica solo i pesi del modello
+            # Load model weights only
             model_state = {k: v for k, v in sd.items() 
                           if k not in ['theta_mean', 'theta_std', 'iv_mean', 'iv_std', 
                                        'T_mean', 'T_std', 'k_mean', 'k_std']}
@@ -1789,47 +1803,63 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
     
     
 class MultiRegimeGridPricer(NeuralSurfacePricer):
-    """
-    Versione aggiornata di MultiRegimeGridPricer che supporta qualsiasi StochasticProcess.
-    Gestisce 3 regimi separati (short, mid, long term).
+    """Models the implied volatility surface using specialized-regime networks.
+
+    This class implements a sophisticated hybrid approach that recognizes that
+    volatility dynamics behave differently across various time horizons. Instead
+    of using a single monolithic network, it employs three distinct
+    `GridNetworkPricer` instances, each specialized for a specific maturity regime:
+    short-term, mid-term, and long-term.
+
+    This architecture allows the framework to capture the nuanced term structure
+    of volatility more accurately. For instance, it can better model the steep,
+    explosive skew for short-term options while simultaneously fitting the
+    flatter, more stable smiles of long-term options. When a prediction is
+    needed, the class intelligently routes the request to the appropriate
+    specialized network based on the option's maturity.
+
+    Attributes:
+        short_term_pricer (GridNetworkPricer): The pricer trained on short-dated options.
+        mid_term_pricer (GridNetworkPricer): The pricer trained on mid-dated options.
+        long_term_pricer (GridNetworkPricer): The pricer trained on long-dated options.
+        short_term_threshold (float): The maturity (in years) separating the short and mid regimes.
+        mid_term_threshold (float): The maturity (in years) separating the mid and long regimes.
     """
     
     def __init__(self,
-                 # Processo stocastico
-                 process: StochasticProcess,  # <-- CAMBIATO
-                 # Parametri per i 3 regimi
+                 process: StochasticProcess,
+                 # Parameters for the 3 regimes
                  short_term_maturities: torch.Tensor,
                  short_term_logK: torch.Tensor,
                  mid_term_maturities: torch.Tensor,
                  mid_term_logK: torch.Tensor,
                  long_term_maturities: torch.Tensor,
                  long_term_logK: torch.Tensor,
-                 # Soglie per dividere i regimi (in anni)
+                 # Thresholds for dividing regimes (in years)
                  short_term_threshold: float = 0.25,
                  mid_term_threshold: float = 1.0,
-                 # Parametri comuni
                  dt: float = 1/365,
                  device: str = 'cpu',
                  r: float = 0.0,
-                 # Parametri architettura per regime
+                 # Architecture parameters for regime
                  short_term_hidden: list = [128, 64],
                  mid_term_hidden: list = [128, 64],
                  long_term_hidden: list = [128, 64],
                  short_term_activation: str = 'ReLU',
                  mid_term_activation: str = 'ReLU',
                  long_term_activation: str = 'ReLU',
-                 # Parametri interpolazione
+                 # Interpolation parameters
                  interpolation_method: str = 'thin_plate_spline',
                  extrapolation: str = 'flat'):
         
         super().__init__(device=device, r=r)
         
-        # Salva processo e soglie
-        self.process = process  # <-- CAMBIATO
+        # Save process and thresholds
+        self.process = process
         self.short_term_threshold = short_term_threshold
         self.mid_term_threshold = mid_term_threshold
         
-        # Crea i 3 pricer separati usando GridNetworkPricerV2
+        # Create the 3 separate pricers using GridNetworkPricer
         self.short_term_pricer = GridNetworkPricer(
             maturities=short_term_maturities,
             logK=short_term_logK,
@@ -1875,14 +1905,14 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             smile_repair_method='pchip'
         )
         
-        # Salva tutte le maturità e strikes per reference
+        # Save all maturities and strikes for reference
         self.all_maturities = torch.cat([
             short_term_maturities,
             mid_term_maturities,
             long_term_maturities
         ]).unique().sort()[0]
         
-        # Per l'interpolazione finale
+        # For the final interpolation
         self.global_interpolator = VolatilityInterpolator(
             method=interpolation_method,
             extrapolation=extrapolation
@@ -1890,7 +1920,7 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
         self._global_interpolator_fitted = False
     
     def _get_regime(self, T: float) -> str:
-        """Determina il regime basato sulla maturità."""
+        """Determine the maturity-based regime."""
         if T <= self.short_term_threshold:
             return 'short'
         elif T <= self.mid_term_threshold:
@@ -1899,7 +1929,7 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             return 'long'
     
     def _get_pricer_for_maturity(self, T: float) -> GridNetworkPricer:
-        """Restituisce il pricer appropriato per la maturità data."""
+        """Returns the appropriate pricer for the given maturity."""
         regime = self._get_regime(T)
         if regime == 'short':
             return self.short_term_pricer
@@ -1913,10 +1943,10 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
                                mid_iv_mean, mid_iv_std,
                                long_iv_mean, long_iv_std):
         """
-        Imposta le statistiche di normalizzazione per tutti i regimi.
-        Nota: theta_mean e theta_std sono comuni a tutti i regimi.
+        Sets the normalization statistics for all regimes.
+        Note: theta_mean and theta_std are common to all regimes.
         """
-        # Imposta statistiche theta per tutti i pricer
+        # Set theta statistics for all pricers
         self.short_term_pricer.set_normalization_stats(
             theta_mean, theta_std, short_iv_mean, short_iv_std
         )
@@ -1927,42 +1957,42 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             theta_mean, theta_std, long_iv_mean, long_iv_std
         )
         
-        # Salva anche nella classe parent per consistency
+        # Also save in parent class for consistency
         super().set_normalization_stats(
             theta_mean, theta_std, 
-            (short_iv_mean + mid_iv_mean + long_iv_mean) / 3,  # Media approssimativa
+            (short_iv_mean + mid_iv_mean + long_iv_mean) / 3,  # Approximate average
             (short_iv_std + mid_iv_std + long_iv_std) / 3
         )
     
     def fit(self,
-            # Dati short term
+            # Short term data
             theta_train_short: torch.Tensor,
             iv_train_short: torch.Tensor,
             theta_val_short: torch.Tensor = None,
             iv_val_short: torch.Tensor = None,
-            # Dati mid term
+            # Mid-term data
             theta_train_mid: torch.Tensor = None,
             iv_train_mid: torch.Tensor = None,
             theta_val_mid: torch.Tensor = None,
             iv_val_mid: torch.Tensor = None,
-            # Dati long term
+            # Long term data
             theta_train_long: torch.Tensor = None,
             iv_train_long: torch.Tensor = None,
             theta_val_long: torch.Tensor = None,
             iv_val_long: torch.Tensor = None,
-            # Parametri training
+            # Training parameters
             n_paths: int = 4096,
             epochs: int = 30,
             batch_size: int = 512,
             lr: float = 1e-3,
-            lr_decay: float = 0.95,  # Decay del learning rate tra regimi
+            lr_decay: float = 0.95,  # Learning rate decay between regimes
             verbose: bool = True):
         """
-        Fitta i 3 pricer sequenzialmente o in parallelo.
-        Se i dati mid/long non sono forniti, usa gli stessi theta dello short.
+        Fit the three pricers sequentially or in parallel.
+        If mid/long data is not provided, use the same thetas as the short.
         """
         
-        # Se non forniti, usa gli stessi theta per tutti i regimi
+        # If not provided, use the same thetas for all regimes
         if theta_train_mid is None:
             theta_train_mid = theta_train_short
         if theta_train_long is None:
@@ -1989,7 +2019,7 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             lr=lr
         )
         
-        # Fit mid term con learning rate ridotto
+        # Mid-term fit with reduced learning rate
         if iv_train_mid is not None:
             if verbose:
                 print("\n" + "=" * 50)
@@ -2005,7 +2035,7 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
                 lr=lr * lr_decay
             )
         
-        # Fit long term con learning rate ulteriormente ridotto
+        # Long-term fit with further reduced learning rate
         if iv_train_long is not None:
             if verbose:
                 print("\n" + "=" * 50)
@@ -2023,10 +2053,10 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
     
     def price_iv(self, theta: torch.Tensor, denormalize_output: bool = True) -> dict:
         """
-        Calcola le superfici IV per tutti i regimi.
-        
+        Calculate the IV surfaces for all regimes.
+
         Returns:
-            dict con keys 'short', 'mid', 'long' contenenti le rispettive superfici
+        dict with keys 'short', 'mid', 'long' containing the respective surfaces
         """
         results = {}
         
@@ -2046,22 +2076,22 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
                         logK: torch.Tensor = None,
                         denormalize_output: bool = True) -> torch.Tensor:
         """
-        Calcola una superficie IV unificata su una griglia comune.
-        
+        Computes a unified IV surface on a common grid.
+
         Args:
-            theta: parametri del modello
-            maturities: maturità desiderate (se None, usa tutte)
-            logK: log-moneyness desiderati (se None, usa unione di tutti)
-            denormalize_output: se denormalizzare l'output
-            
+            theta: model parameters
+            maturities: desired maturities (if None, use all)
+            logK: desired log-moneyness (if None, use union of all)
+            denormalize_output: whether to denormalize the output
+
         Returns:
-            Superficie unificata [batch_size, len(maturities), len(logK)]
+            Unified Surface [batch_size, len(maturities), len(logK)]
         """
         if maturities is None:
             maturities = self.all_maturities
         
         if logK is None:
-            # Unione di tutti i logK dei 3 regimi
+            # Union of all logK of the 3 regimes
             all_logK = torch.cat([
                 self.short_term_pricer.logKs,
                 self.mid_term_pricer.logKs,
@@ -2073,22 +2103,22 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
         n_T = len(maturities)
         n_K = len(logK)
         
-        # Inizializza output
+        # Initialize output
         unified_surface = torch.zeros(batch_size, n_T, n_K, device=self.device)
         
-        # Per ogni batch
+        # For each batch
         for b in range(batch_size):
             theta_b = theta[b:b+1]
             
-            # Ottieni superfici dai 3 regimi
+            # Get surfaces from the 3 regimes
             surfaces = self.price_iv(theta_b, denormalize_output)
             
-            # Fitta interpolatori per ogni regime
+            # Fit interpolators for each regime
             self.short_term_pricer._fit_interpolator(surfaces['short'][0].detach())
             self.mid_term_pricer._fit_interpolator(surfaces['mid'][0].detach())
             self.long_term_pricer._fit_interpolator(surfaces['long'][0].detach())
             
-            # Interpola per ogni punto della griglia unificata
+            # Interpolate for each point of the unified grid
             for i, T in enumerate(maturities):
                 T_val = T.item()
                 pricer = self._get_pricer_for_maturity(T_val)
@@ -2096,24 +2126,24 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
                 for j, k in enumerate(logK):
                     k_val = k.item()
                     
-                    # Usa l'interpolatore del regime appropriato
+                    # Use the appropriate regime interpolator
                     unified_surface[b, i, j] = pricer.interpolate_iv(T_val, k_val)
         
         return unified_surface
     
     def interpolate_iv(self, T, k, theta=None):
         """
-        Interpola IV per punti arbitrari (T, k) usando il regime appropriato.
-        
+        Interpolate IV for arbitrary points (T, k) using the appropriate regime.
+
         Args:
-            T: maturità (scalare o array)
-            k: log-moneyness (scalare o array)
-            theta: parametri del modello (opzionale se già fittato)
-            
+            T: maturity (scalar or array)
+            k: log-moneyness (scalar or array)
+            theta: model parameters (optional if already fitted)
+
         Returns:
-            IV interpolata
+            Interpolated IV
         """
-        # Converti in numpy se necessario
+        # Convert to numpy if necessary
         T_np = np.asarray(T)
         k_np = np.asarray(k)
         scalar_input = T_np.ndim == 0
@@ -2122,16 +2152,16 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             T_np = T_np.reshape(1)
             k_np = k_np.reshape(1)
         
-        # Se fornito theta, calcola le superfici
+        # If theta is given, calculate the surfaces
         if theta is not None:
             surfaces = self.price_iv(theta.unsqueeze(0) if theta.dim() == 1 else theta)
             
-            # Fitta interpolatori
+            # Fit interpolators
             self.short_term_pricer._fit_interpolator(surfaces['short'][0].detach())
             self.mid_term_pricer._fit_interpolator(surfaces['mid'][0].detach())
             self.long_term_pricer._fit_interpolator(surfaces['long'][0].detach())
         
-        # Interpola usando il regime appropriato per ogni punto
+        # Interpolate using the appropriate regime for each point
         results = np.zeros_like(T_np, dtype=float)
         
         for i, (t, k_val) in enumerate(zip(T_np, k_np)):
@@ -2144,17 +2174,17 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
     
     def save(self, path_prefix: str, include_norm_stats: bool = False):
         """
-        Salva tutti e 3 i modelli.
-        
+        Save all 3 models.
+
         Args:
-            path_prefix: prefisso per i file (es. 'model' -> 'model_short.pt', etc.)
-            include_norm_stats: se includere le statistiche di normalizzazione
+            path_prefix: File prefix (e.g., 'model' -> 'model_short.pt', etc.)
+            include_norm_stats: Whether to include normalization statistics
         """
         self.short_term_pricer.save(f"{path_prefix}_short.pt", include_norm_stats)
         self.mid_term_pricer.save(f"{path_prefix}_mid.pt", include_norm_stats)
         self.long_term_pricer.save(f"{path_prefix}_long.pt", include_norm_stats)
         
-        # Salva anche metadati sui regimi
+        # Also saves metadata about regimes
         metadata = {
             'short_term_threshold': self.short_term_threshold,
             'mid_term_threshold': self.mid_term_threshold,
@@ -2171,26 +2201,25 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
     def load(cls, path_prefix: str, process: Union[str, StochasticProcess],
              load_norm_stats: bool = False, **kwargs):
         """
-        Carica un modello multi-regime salvato.
-        
+        Load a saved multi-regime model.
+
         Args:
-            path_prefix: prefisso dei file
-            process: nome del processo o istanza StochasticProcess
-            load_norm_stats: se caricare le statistiche
-            **kwargs: parametri aggiuntivi
+            path_prefix: File prefix
+            process: Process name or StochasticProcess instance
+            load_norm_stats: Whether to load statistics
+            **kwargs: Additional parameters
         """
-        # Carica metadata
+        # Upload metadata
         device = kwargs.get('device', 'cpu')
         metadata = torch.load(f"{path_prefix}_metadata.pt", map_location=device, weights_only=True)
         
-        # Crea processo se passato come stringa
+        # Create process if passed as a string
         if isinstance(process, str):
-            from .stochastic_interface import ProcessFactory
             process_obj = ProcessFactory.create(process)
         else:
             process_obj = process
         
-        # Crea istanza
+        # Create instance
         obj = cls(
             process=process_obj,
             short_term_maturities=metadata['short_term_maturities'].to(device),
@@ -2204,7 +2233,7 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             **kwargs
         )
         
-        # Carica i pesi dei 3 modelli
+        # Load the weights of the 3 models
         short_sd = torch.load(f"{path_prefix}_short.pt", map_location=device, weights_only=True)
         mid_sd = torch.load(f"{path_prefix}_mid.pt", map_location=device, weights_only=True)
         long_sd = torch.load(f"{path_prefix}_long.pt", map_location=device, weights_only=True)
@@ -2214,7 +2243,7 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             obj.mid_term_pricer.load_state_dict(mid_sd, strict=False)
             obj.long_term_pricer.load_state_dict(long_sd, strict=False)
         else:
-            # Carica solo i pesi del modello
+            # Load model weights only
             for pricer, sd in [(obj.short_term_pricer, short_sd),
                               (obj.mid_term_pricer, mid_sd),
                               (obj.long_term_pricer, long_sd)]:
@@ -2226,7 +2255,7 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
         return obj
     
     def to(self, device):
-        """Override per gestire correttamente il device di tutti i pricer."""
+        """Override to correctly manage the device of all pricers."""
         self.device = device
         self.short_term_pricer = self.short_term_pricer.to(device)
         self.mid_term_pricer = self.mid_term_pricer.to(device)
@@ -2234,7 +2263,7 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
         return super().to(device)
     
     def eval(self):
-        """Metti tutti i pricer in eval mode."""
+        """Put all pricers in eval mode."""
         super().eval()
         self.short_term_pricer.eval()
         self.mid_term_pricer.eval()
@@ -2242,7 +2271,7 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
         return self
     
     def train(self, mode=True):
-        """Metti tutti i pricer in train mode."""
+        """Put all pricers in train mode."""
         super().train(mode)
         self.short_term_pricer.train(mode)
         self.mid_term_pricer.train(mode)
