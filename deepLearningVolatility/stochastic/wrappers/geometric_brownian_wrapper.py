@@ -74,7 +74,7 @@ class GeometricBrownianProcess(BaseStochasticProcess):
         
         # Engine per random numbers
         if antithetic:
-            from deepLearningVolatility.stochastic import randn_antithetic
+            from deepLearningVolatility.stochastic.random_helpers import randn_antithetic
             engine = lambda *size, dtype=None, device=None: randn_antithetic(
                 *size, dtype=dtype, device=device
             )
@@ -105,11 +105,8 @@ class GeometricBrownianProcess(BaseStochasticProcess):
 
 
 # Registra il processo
-ProcessFactory.register('geometric_brownian', GeometricBrownianProcess)
-ProcessFactory.register('gbm', GeometricBrownianProcess)  # Alias
-ProcessFactory.register('black_scholes', GeometricBrownianProcess)  # Alias
 ProcessFactory.register(
-    'geometric_brownian', GeometricBrownianProcess,
-    aliases=['gbm', 'geometric-brownian', 'geometricbrownian',
-             'black_scholes', 'black-scholes', 'blackscholes']
-)
+     "geometric_brownian", GeometricBrownianProcess,
+     aliases=["gbm", "geometric-brownian", "geometricbrownian",
+              "black_scholes", "black-scholes", "blackscholes"]
+ )

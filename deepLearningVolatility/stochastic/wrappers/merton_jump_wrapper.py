@@ -112,8 +112,6 @@ class MertonJumpProcess(BaseStochasticProcess):
 
 
 # Registra il processo
-ProcessFactory.register('merton_jump', MertonJumpProcess)
-ProcessFactory.register('merton', MertonJumpProcess)  # Alias
 ProcessFactory.register(
     'merton_jump', MertonJumpProcess,
     aliases=['merton', 'mertonjump', 'merton-jump', 'merton_jump_process', 'mertonjumpprocess']

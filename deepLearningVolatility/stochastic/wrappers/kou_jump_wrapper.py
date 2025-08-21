@@ -123,8 +123,6 @@ class KouJumpProcess(BaseStochasticProcess):
 
 
 # Registra il processo
-ProcessFactory.register('kou_jump', KouJumpProcess)
-ProcessFactory.register('kou', KouJumpProcess)  # Alias
 ProcessFactory.register(
     'kou_jump', KouJumpProcess,
     aliases=['kou', 'koujump', 'kou-jump', 'kou_jump_process', 'koujumpprocess']

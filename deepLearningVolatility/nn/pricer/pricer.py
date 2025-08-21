@@ -670,6 +670,7 @@ class GridNetworkPricer(NeuralSurfacePricer):
         self.register_buffer('logKs', logK.to(device))
         self.process = process
         self.dt = dt
+        self.fixed_regime_dt = None  # Can be set externally for fixed dt per regime
         self.out_dim = len(self.Ts) * len(self.logKs)
         
         # Neural network with dynamic architecture based on Num_params
@@ -711,10 +712,17 @@ class GridNetworkPricer(NeuralSurfacePricer):
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Determine adaptive dt
+        # Determine dt based on regime or adaptive logic
         T_min = self.Ts.min().item()
-        if adaptive_dt:
-            if T_min <= 0.1:
+
+        # Check if fixed regime dt is set (for multi-regime training)
+        if hasattr(self, 'fixed_regime_dt') and self.fixed_regime_dt is not None:
+            dt_base = self.fixed_regime_dt
+        elif adaptive_dt:
+            # Enhanced adaptive dt for short maturities
+            if T_min <= 30/365:  # <= 1 month (SHORT regime)
+                dt_base = 3e-5  # Ultra-fine discretization for stability
+            elif T_min <= 0.1:
                 dt_base = 1/1460
             elif T_min < 1.0:
                 dt_base = 1/730
