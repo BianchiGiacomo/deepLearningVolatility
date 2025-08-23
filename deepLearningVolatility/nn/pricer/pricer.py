@@ -1858,7 +1858,10 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
                  long_term_activation: str = 'ReLU',
                  # Interpolation parameters
                  interpolation_method: str = 'thin_plate_spline',
-                 extrapolation: str = 'flat'):
+                 extrapolation: str = 'flat',
+                 short_term_dt: float = None,
+                 mid_term_dt: float = None,
+                 long_term_dt: float = None):
         
         super().__init__(device=device, r=r)
         
@@ -1913,6 +1916,18 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             smile_repair_method='pchip'
         )
         
+        if short_term_dt is not None:
+            self.short_term_pricer.fixed_regime_dt = short_term_dt
+        if mid_term_dt is not None:
+            self.mid_term_pricer.fixed_regime_dt = mid_term_dt
+        if long_term_dt is not None:
+            self.long_term_pricer.fixed_regime_dt = long_term_dt
+        
+        self.regime_dt_config = {
+            'short': short_term_dt or 3e-5,
+            'mid': mid_term_dt or 1e-4,
+            'long': long_term_dt or 1/365
+        }
         # Save all maturities and strikes for reference
         self.all_maturities = torch.cat([
             short_term_maturities,
@@ -2202,6 +2217,7 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             'mid_term_logK': self.mid_term_pricer.logKs.cpu(),
             'long_term_maturities': self.long_term_pricer.Ts.cpu(),
             'long_term_logK': self.long_term_pricer.logKs.cpu(),
+            'regime_dt_config': self.regime_dt_config
         }
         torch.save(metadata, f"{path_prefix}_metadata.pt")
     
@@ -2220,7 +2236,10 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
         # Upload metadata
         device = kwargs.get('device', 'cpu')
         metadata = torch.load(f"{path_prefix}_metadata.pt", map_location=device, weights_only=True)
-        
+        if 'regime_dt_config' in metadata:
+            kwargs['short_term_dt'] = metadata['regime_dt_config'].get('short')
+            kwargs['mid_term_dt'] = metadata['regime_dt_config'].get('mid')  
+            kwargs['long_term_dt'] = metadata['regime_dt_config'].get('long')
         # Create process if passed as a string
         if isinstance(process, str):
             process_obj = ProcessFactory.create(process)

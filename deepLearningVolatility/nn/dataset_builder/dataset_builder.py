@@ -1251,15 +1251,141 @@ class DatasetBuilder:
             iv_grid.append(iv_smile)
         return {'maturities': mats, 'strikes': all_strikes, 'iv_grid': torch.stack(iv_grid)}
 
-    def build_random_grids_dataset(self, n_surfaces: int = 10000, n_maturities: int = 11,
-                               n_strikes: int = 13, n_paths: int = 30000, spot: float = 1.0,
-                               normalize: bool = True, compute_stats_from=None,
-                               show_progress: bool = True, batch_size: int = 50,
-                               checkpoint_every: int = 100, resume_from: str = None,
-                               save_all_thetas: bool = True, base_seed: int = 42,
-                               split: str | None = None):
-        """Build pointwise datasets with Random Grids approach"""
+    def _generate_random_grid_optimized(self, theta: torch.Tensor, n_maturities: int = 11,
+                                    n_strikes_per_maturity: int = 13, spot: float = 1.0,
+                                    mc_params: dict = None):
+        """
+        Generates a random IV(T,K) grid with regime-based simulation reuse.
+        Groups maturities by dt regime and reuses MC paths within each regime.
+        """
+        if mc_params is None:
+            mc_params = self.get_process_specific_mc_params()
         
+        # Sample random maturities
+        mats = self._sample_random_maturities(n_maturities)
+        
+        # Define dt regimes
+        dt_regimes = {
+            'ultra_short': (0, 30/365, 3e-5),      # T ≤ 30 days
+            'short': (30/365, 90/365, 1e-4),       # 30 < T ≤ 90 days  
+            'mid': (90/365, 360/365, 1/730),       # 90 < T ≤ 360 days
+            'long': (360/365, float('inf'), 1/365) # T > 360 days
+        }
+        
+        # Group maturities by regime
+        regime_maturities = {regime: [] for regime in dt_regimes.keys()}
+        for i, T in enumerate(mats):
+            T_val = T.item()
+            for regime, (t_min, t_max, _) in dt_regimes.items():
+                if t_min < T_val <= t_max:
+                    regime_maturities[regime].append((i, T))
+                    break
+        
+        # Storage for results
+        all_strikes = [None] * len(mats)
+        iv_grid = [None] * len(mats)
+        
+        # Process each regime with a single simulation
+        for regime, mat_list in regime_maturities.items():
+            if not mat_list:
+                continue
+                
+            _, _, dt_regime = dt_regimes[regime]
+            
+            # Find max maturity in this regime for simulation
+            max_T_regime = max(T.item() for _, T in mat_list)
+            n_steps = max(2, int(np.ceil(max_T_regime / dt_regime)))
+            
+            # Single simulation for all maturities in this regime
+            sim_result = self.process.simulate(
+                theta=theta,
+                n_paths=mc_params.get('n_paths', 30000),
+                n_steps=n_steps,
+                dt=dt_regime,
+                init_state=(spot,) if not self.process.requires_variance_state else None,
+                device=self.device,
+                antithetic=mc_params.get('use_antithetic', True)
+            )
+            
+            S_paths = sim_result.spot
+            
+            # Process each maturity in this regime using the same paths
+            for idx, T in mat_list:
+                T_val = T.item()
+                
+                # Find the time index corresponding to this maturity
+                time_idx = min(int(np.round(T_val / dt_regime)), n_steps - 1)
+                ST = S_paths[:, time_idx]
+                
+                # Sample strikes for this maturity
+                strikes = self._sample_random_strikes(T_val, spot, n_strikes_per_maturity)
+                logK = torch.log(strikes / spot)
+                
+                # Calculate IV for each strike
+                iv_smile = torch.zeros(len(strikes), device=self.device)
+                
+                for j, K in enumerate(strikes):
+                    # Calculate option price
+                    payoff = (ST - K).clamp(min=0.0)
+                    price = payoff.mean() * torch.exp(-self.r * T_val)
+                    
+                    # Calculate IV
+                    if price > 1e-10:
+                        try:
+                            bs = BlackScholes(
+                                EuropeanOption(
+                                    BrownianStock(),
+                                    strike=float(K),
+                                    maturity=float(T_val)
+                                )
+                            )
+                            iv_smile[j] = bs.implied_volatility(
+                                log_moneyness=logK[j].item(),
+                                time_to_maturity=T_val,
+                                price=price.item()
+                            )
+                        except:
+                            iv_smile[j] = self._get_default_volatility(theta)
+                    else:
+                        iv_smile[j] = self._get_default_volatility(theta)
+                
+                # Apply smile repair if needed
+                if self.enable_smile_repair:
+                    iv_smile_np = iv_smile.cpu().numpy()
+                    logK_np = logK.cpu().numpy()
+                    iv_repaired, _ = SmileRepair.repair_smile_simple(
+                        iv_smile_np, logK_np, 
+                        min_valid_points=3,
+                        fallback_vol=self._get_default_volatility(theta),
+                        method=self.smile_repair_method
+                    )
+                    iv_smile = torch.tensor(iv_repaired, device=self.device, dtype=torch.float32)
+                
+                all_strikes[idx] = strikes
+                iv_grid[idx] = iv_smile
+            
+            # Clean up memory after each regime
+            del S_paths, sim_result
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
+        
+        return {
+            'maturities': mats, 
+            'strikes': all_strikes, 
+            'iv_grid': torch.stack(iv_grid)
+        }
+
+    def build_random_grids_dataset(self, n_surfaces: int = 10000, n_maturities: int = 11,
+                                         n_strikes: int = 13, n_paths: int = 30000, 
+                                         spot: float = 1.0, normalize: bool = True, 
+                                         compute_stats_from=None, show_progress: bool = True,
+                                         batch_size: int = 50, checkpoint_every: int = 100,
+                                         resume_from: str = None, save_all_thetas: bool = True,
+                                         base_seed: int = 42, split: str | None = None):
+        """
+        Build pointwise datasets with Random Grids approach using optimized regime-based simulation.
+        This version groups maturities by dt regime and reuses simulations.
+        """        
         # Setup checkpoint directory
         split = (split or getattr(self, 'dataset_type', 'train')).lower()
         assert split in ('train','val'), "split must be 'train' or 'val'"
@@ -1775,6 +1901,22 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         # Calculate progress and remaining per-regime
         done = {reg: len(all_data[reg]['theta']) for reg in ['short','mid','long']}
         remaining = {reg: max(0, targets[reg] - done[reg]) for reg in ['short','mid','long']}
+        
+        all_complete = all(done[reg] >= targets[reg] for reg in ['short', 'mid', 'long'])
+        
+        if all_complete:
+            print("Dataset già completo per tutti i regimi!")
+            return self._process_completed_multi_regime_dataset(
+                all_data, normalize, compute_stats_from
+            )
+        
+        print("\nStato dataset:")
+        for reg in ['short', 'mid', 'long']:
+            status = "✓ COMPLETO" if done[reg] >= targets[reg] else f"INCOMPLETO ({done[reg]}/{targets[reg]})"
+            print(f"  {reg}: {status}")
+        
+        if any(done[reg] > 0 and done[reg] < targets[reg] for reg in ['short', 'mid', 'long']):
+            print("\n! WARNING: Dataset parzialmente completo. Continuando la generazione...")
 
         if all(v == 0 for v in remaining.values()):
             print("Dataset già completo!")
