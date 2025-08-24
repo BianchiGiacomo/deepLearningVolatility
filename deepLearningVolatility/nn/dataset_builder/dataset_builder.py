@@ -1971,13 +1971,13 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
 
                 # Compute IV
                 iv_batch = []
-                # Set fixed dt for this regime to ensure consistency
-                regime_dt_config = {
-                    'short': 3e-5,   # Ultra-fine for short maturities
-                    'mid': 1e-4,     # Medium discretization
-                    'long': 1/365    # Standard daily
-                }
-                pricer.fixed_regime_dt = regime_dt_config[regime]
+                # use the MultiRegimeGridPricer config, if present
+                regime_dt_config = getattr(multi_regime_pricer, 'regime_dt_config',
+                                        {'short': 3e-5, 'mid': 1/1460, 'long': 1/365})
+                # do not overwrite if already set
+                if getattr(pricer, 'fixed_regime_dt', None) is None:
+                    pricer.fixed_regime_dt = regime_dt_config[regime]
+
                 with torch.cuda.amp.autocast(enabled=mixed_precision and self.device.type == 'cuda'):
                     for theta in tqdm(batch_thetas, desc=f"Computing {regime} IV grids"):
                         try:
