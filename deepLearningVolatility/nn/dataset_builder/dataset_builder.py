@@ -2256,6 +2256,145 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         
         return train_datasets, val_datasets
     
+class ExternalPointwiseDatasetBuilder(DatasetBuilder):
+    """
+    Dataset builder that uses external pricing backend instead of Monte Carlo simulation.
+    Inherits from DatasetBuilder to reuse sampling and normalization logic.
+    """
+    
+    def __init__(self, process, backend: 'PricingBackend', **kwargs):
+        """
+        Args:
+            process: StochasticProcess instance
+            backend: PricingBackend implementation for external pricing
+            **kwargs: Additional arguments passed to DatasetBuilder
+        """
+        super().__init__(process=process, **kwargs)
+        self.backend = backend
+    
+    def _theta_tensor_to_dict(self, theta: torch.Tensor) -> Dict[str, float]:
+        """Convert theta tensor to parameter dictionary for backend."""
+        return {name: float(theta[i].item()) 
+                for i, name in enumerate(self.process.param_info.names)}
+    
+    @torch.no_grad()
+    def _generate_random_grid(self, theta: torch.Tensor,
+                              n_maturities: int = 11,
+                              n_strikes_per_maturity: int = 13,
+                              spot: float = 1.0,
+                              mc_params: dict = None):  # Ignored for external backend
+        """
+        Generates a random IV(T,K) grid using external backend instead of MC simulation.
+        
+        Args:
+            theta: Model parameters tensor
+            n_maturities: Number of random maturities
+            n_strikes_per_maturity: Number of strikes per maturity
+            spot: Spot price
+            mc_params: Ignored (kept for interface compatibility)
+            
+        Returns:
+            Dictionary with maturities, strikes, and IV grid
+        """
+        # Sample random maturities using base class method
+        mats = self._sample_random_maturities(n_maturities)
+        
+        all_strikes, iv_grid = [], []
+        theta_dict = self._theta_tensor_to_dict(theta)
+        
+        for T in mats:
+            T_val = float(T.item())
+            
+            # Sample random strikes using base class method
+            strikes = self._sample_random_strikes(T_val, spot, n_strikes_per_maturity)
+            
+            # Calculate IVs using backend
+            ivs = []
+            for K in strikes:
+                K_val = float(K.item())
+                try:
+                    # Price via backend
+                    price = self.backend.price(
+                        theta_dict, T_val, K_val, 'C', spot, 1.0
+                    )
+                    
+                    # Calculate IV via backend
+                    if price > 1e-10:
+                        iv = self.backend.implied_vol(
+                            T_val, spot, K_val, price, 'C', 1.0
+                        )
+                    else:
+                        iv = self._get_process_default_volatility(theta)
+                        
+                except Exception as e:
+                    # Fallback to default volatility
+                    iv = self._get_process_default_volatility(theta)
+                    if hasattr(self, 'verbose') and self.verbose:
+                        print(f"Backend pricing failed: {e}")
+                
+                ivs.append(iv)
+            
+            all_strikes.append(strikes)
+            iv_grid.append(torch.tensor(ivs, dtype=torch.float32, device=self.device))
+        
+        return {
+            'maturities': mats,
+            'strikes': all_strikes,
+            'iv_grid': torch.stack(iv_grid)
+        }
+    
+    def build_external_random_grids_dataset(self,
+                                           n_surfaces: int = 10000,
+                                           n_maturities: int = 11,
+                                           n_strikes: int = 13,
+                                           spot: float = 1.0,
+                                           normalize: bool = True,
+                                           compute_stats_from=None,
+                                           show_progress: bool = True,
+                                           batch_size: int = 50,
+                                           checkpoint_every: int = 100,
+                                           resume_from: str = None,
+                                           base_seed: int = 42,
+                                           split: str = None):
+        """
+        Build pointwise dataset using external backend with random grids approach.
+        This is a wrapper around build_random_grids_dataset that uses the external backend.
+        
+        Args:
+            n_surfaces: Number of parameter sets
+            n_maturities: Number of maturities per surface
+            n_strikes: Number of strikes per maturity
+            spot: Spot price
+            normalize: Whether to normalize the data
+            compute_stats_from: DatasetBuilder to copy normalization stats from
+            show_progress: Show progress bar
+            batch_size: Batch size for processing
+            checkpoint_every: Checkpoint frequency
+            resume_from: Path to resume from checkpoint
+            base_seed: Random seed
+            split: 'train' or 'val'
+            
+        Returns:
+            Tuple of (theta, T, k, iv) tensors
+        """
+        # Override the internal _generate_random_grid to use external backend
+        # This is already done above, so we can just call the base method
+        return self.build_random_grids_dataset(
+            n_surfaces=n_surfaces,
+            n_maturities=n_maturities,
+            n_strikes=n_strikes,
+            n_paths=0,  # Not used with external backend
+            spot=spot,
+            normalize=normalize,
+            compute_stats_from=compute_stats_from,
+            show_progress=show_progress,
+            batch_size=batch_size,
+            checkpoint_every=checkpoint_every,
+            resume_from=resume_from,
+            base_seed=base_seed,
+            split=split
+        )
+
 class CheckpointManager:
     """Manages checkpoints for dataset generation"""
     
