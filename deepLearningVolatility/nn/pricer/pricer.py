@@ -722,10 +722,8 @@ class GridNetworkPricer(NeuralSurfacePricer):
             # Enhanced adaptive dt for short maturities
             if T_min <= 30/365:  # <= 1 month (SHORT regime)
                 dt_base = 3e-5  # Ultra-fine discretization for stability
-            elif T_min <= 0.1:
-                dt_base = 1/1460
             elif T_min < 1.0:
-                dt_base = 1/730
+                dt_base = 1/1460
             else:
                 dt_base = 1/365
         else:
@@ -1224,10 +1222,10 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
         
         # Determine dt
         if adaptive_dt:
-            if T <= 0.1:
-                dt_use = T / 100
-            elif T <= 0.25:
-                dt_use = 1/365 / 2
+            if T <= 30/365:
+                dt_use = 3e-5
+            elif T < 1.0:
+                dt_use = 1/1460
             else:
                 dt_use = 1/365
         else:
@@ -1405,10 +1403,10 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
             
             # Determine dt for this deadline
             if adaptive_dt:
-                if T_val <= 0.1:
-                    dt_use = T_val / 100
-                elif T_val <= 0.25:
-                    dt_use = 1/365 / 2
+                if T_val <= 30/365:
+                    dt_use = 3e-5
+                elif T_val < 1.0:
+                    dt_use = 1/1460
                 else:
                     dt_use = 1/365
             else:
