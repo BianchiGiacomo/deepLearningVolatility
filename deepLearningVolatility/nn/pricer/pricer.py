@@ -662,7 +662,8 @@ class GridNetworkPricer(NeuralSurfacePricer):
                  interpolation_method: str = 'thin_plate_spline',
                  extrapolation: str = 'flat',
                  enable_smile_repair: bool = True,
-                 smile_repair_method: str = 'pchip'):
+                 smile_repair_method: str = 'pchip',
+                 enable_interpolation: bool = True):
         
         super().__init__(device=device, r=r)
         
@@ -682,11 +683,14 @@ class GridNetworkPricer(NeuralSurfacePricer):
         ).to(device)
         
         # Interpolator
-        self.interpolator = VolatilityInterpolator(
-            method=interpolation_method,
-            extrapolation=extrapolation
-        )
+        self.enable_interpolation = enable_interpolation
+        # Always define the flag to avoid AttributeError when interpolation is disabled
         self._interpolator_fitted = False
+        if self.enable_interpolation:
+            self.interpolator = VolatilityInterpolator(
+                method=interpolation_method,
+                extrapolation=extrapolation
+            )
         self.enable_smile_repair = enable_smile_repair
         self.smile_repair_method = smile_repair_method
         self.last_repair_stats = None
@@ -1044,14 +1048,16 @@ class GridNetworkPricer(NeuralSurfacePricer):
         else:
             iv_surface = iv_surface_norm
         
-        # If a single theta is required, fit the interpolator
-        if theta.shape[0] == 1 and not self._interpolator_fitted:
+        # If a single theta is required, fit the interpolator (only if enabled)
+        if self.enable_interpolation and theta.shape[0] == 1 and not self._interpolator_fitted:
             self._fit_interpolator(iv_surface[0].detach())
         
         return iv_surface
     
     def _fit_interpolator(self, iv_surface: torch.Tensor):
         """Fit the interpolator onto a surface IV."""
+        if not self.enable_interpolation:
+            return
         T_np = self.Ts.cpu().numpy()
         k_np = self.logKs.cpu().numpy()
         iv_np = iv_surface.cpu().numpy()
@@ -1071,6 +1077,8 @@ class GridNetworkPricer(NeuralSurfacePricer):
         Returns:
             Interpolated IV
         """
+        if not self.enable_interpolation:
+            raise RuntimeError("Interpolation is disabled for this pricer")
         if theta is not None:
             # Calculate the surface area for this theta
             iv_surface = self.price_iv(theta.unsqueeze(0) if theta.dim() == 1 else theta)
@@ -1859,7 +1867,9 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
                  extrapolation: str = 'flat',
                  short_term_dt: float = None,
                  mid_term_dt: float = None,
-                 long_term_dt: float = None):
+                 long_term_dt: float = None,
+                 enable_interpolation: bool = True,
+                 enable_smile_repair: bool = True):
         
         super().__init__(device=device, r=r)
         
@@ -1880,8 +1890,9 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             r=r,
             interpolation_method=interpolation_method,
             extrapolation=extrapolation,
-            enable_smile_repair=True,
-            smile_repair_method='pchip'
+            enable_smile_repair=enable_smile_repair,
+            smile_repair_method='pchip',
+            enable_interpolation=enable_interpolation
         )
         
         self.mid_term_pricer = GridNetworkPricer(
@@ -1895,8 +1906,9 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             r=r,
             interpolation_method=interpolation_method,
             extrapolation=extrapolation,
-            enable_smile_repair=True,
-            smile_repair_method='pchip'
+            enable_smile_repair=enable_smile_repair,
+            smile_repair_method='pchip',
+            enable_interpolation=enable_interpolation
         )
         
         self.long_term_pricer = GridNetworkPricer(
@@ -1910,8 +1922,9 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             r=r,
             interpolation_method=interpolation_method,
             extrapolation=extrapolation,
-            enable_smile_repair=True,
-            smile_repair_method='pchip'
+            enable_smile_repair=enable_smile_repair,
+            smile_repair_method='pchip',
+            enable_interpolation=enable_interpolation
         )
         
         if short_term_dt is not None:
@@ -1933,7 +1946,9 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             long_term_maturities
         ]).unique().sort()[0]
         
-        # For the final interpolation
+        # Mirror flag at the multi-regime level (useful for branching)
+        self.enable_interpolation = enable_interpolation
+        # For the final interpolation (kept for compatibility)
         self.global_interpolator = VolatilityInterpolator(
             method=interpolation_method,
             extrapolation=extrapolation
@@ -2134,21 +2149,37 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             # Get surfaces from the 3 regimes
             surfaces = self.price_iv(theta_b, denormalize_output)
             
-            # Fit interpolators for each regime
-            self.short_term_pricer._fit_interpolator(surfaces['short'][0].detach())
-            self.mid_term_pricer._fit_interpolator(surfaces['mid'][0].detach())
-            self.long_term_pricer._fit_interpolator(surfaces['long'][0].detach())
-            
-            # Interpolate for each point of the unified grid
-            for i, T in enumerate(maturities):
-                T_val = T.item()
-                pricer = self._get_pricer_for_maturity(T_val)
-                
-                for j, k in enumerate(logK):
-                    k_val = k.item()
-                    
-                    # Use the appropriate regime interpolator
-                    unified_surface[b, i, j] = pricer.interpolate_iv(T_val, k_val)
+            # Branch: use RBF interpolation if enabled, otherwise fast nearest-neighbour stitching
+            if (self.short_term_pricer.enable_interpolation and
+                self.mid_term_pricer.enable_interpolation and
+                self.long_term_pricer.enable_interpolation):
+                # Fit interpolators for each regime
+                self.short_term_pricer._fit_interpolator(surfaces['short'][0].detach())
+                self.mid_term_pricer._fit_interpolator(surfaces['mid'][0].detach())
+                self.long_term_pricer._fit_interpolator(surfaces['long'][0].detach())
+
+                # Interpolate for each point of the unified grid
+                for i, T in enumerate(maturities):
+                    T_val = float(T)
+                    pricer = self._get_pricer_for_maturity(T_val)
+                    for j, k in enumerate(logK):
+                        unified_surface[b, i, j] = pricer.interpolate_iv(T_val, float(k))
+            else:
+                # No-interp path: pick nearest values on the native regime grids
+                short_S = surfaces['short'][0]
+                mid_S   = surfaces['mid'][0]
+                long_S  = surfaces['long'][0]
+                for i, T in enumerate(maturities):
+                    T_val = T  # torch scalar
+                    pr = self._get_pricer_for_maturity(float(T_val))
+                    Sreg = short_S if pr is self.short_term_pricer else (mid_S if pr is self.mid_term_pricer else long_S)
+                    Ts, Ks = pr.Ts, pr.logKs  # native grids (torch)
+                    # nearest T index
+                    t_idx = torch.argmin(torch.abs(Ts - T_val)).item()
+                    # nearest K indices for the whole row (vectorized)
+                    dK = torch.abs(Ks.view(1, -1) - logK.view(-1, 1))  # [nK_target, nK_native]
+                    k_idx = torch.argmin(dK, dim=1)                    # [nK_target]
+                    unified_surface[b, i, :] = Sreg[t_idx, k_idx]
         
         return unified_surface
     
@@ -2173,21 +2204,39 @@ class MultiRegimeGridPricer(NeuralSurfacePricer):
             T_np = T_np.reshape(1)
             k_np = k_np.reshape(1)
         
-        # If theta is given, calculate the surfaces
+        # If theta is given, calculate the three regime surfaces (needed for no-interp path)
+        surfaces = None
         if theta is not None:
             surfaces = self.price_iv(theta.unsqueeze(0) if theta.dim() == 1 else theta)
-            
-            # Fit interpolators
-            self.short_term_pricer._fit_interpolator(surfaces['short'][0].detach())
-            self.mid_term_pricer._fit_interpolator(surfaces['mid'][0].detach())
-            self.long_term_pricer._fit_interpolator(surfaces['long'][0].detach())
-        
-        # Interpolate using the appropriate regime for each point
+
+        all_enabled = (self.short_term_pricer.enable_interpolation and
+                       self.mid_term_pricer.enable_interpolation and
+                       self.long_term_pricer.enable_interpolation)
+
         results = np.zeros_like(T_np, dtype=float)
-        
-        for i, (t, k_val) in enumerate(zip(T_np, k_np)):
-            pricer = self._get_pricer_for_maturity(t)
-            results[i] = pricer.interpolate_iv(t, k_val)
+        if all_enabled:
+            # Fit interpolators only if enabled
+            if surfaces is not None:
+                self.short_term_pricer._fit_interpolator(surfaces['short'][0].detach())
+                self.mid_term_pricer._fit_interpolator(surfaces['mid'][0].detach())
+                self.long_term_pricer._fit_interpolator(surfaces['long'][0].detach())
+            # Interpolate via per-regime interpolators
+            for i, (t, k_val) in enumerate(zip(T_np, k_np)):
+                pricer = self._get_pricer_for_maturity(float(t))
+                results[i] = pricer.interpolate_iv(float(t), float(k_val))
+        else:
+            # Fast path: nearest-neighbour read-off from native regime grids
+            if surfaces is None:
+                raise ValueError("Interpolation is disabled; provide `theta` so values can be taken from regime grids.")
+            short_S = surfaces['short'][0]; mid_S = surfaces['mid'][0]; long_S = surfaces['long'][0]
+            for i, (t, k_val) in enumerate(zip(T_np, k_np)):
+                pr = self._get_pricer_for_maturity(float(t))
+                Sreg = short_S if pr is self.short_term_pricer else (mid_S if pr is self.mid_term_pricer else long_S)
+                Ts = pr.Ts.cpu().numpy()
+                Ks = pr.logKs.cpu().numpy()
+                t_idx = int(np.abs(Ts - t).argmin())
+                k_idx = int(np.abs(Ks - k_val).argmin())
+                results[i] = float(Sreg[t_idx, k_idx].item())
         
         if scalar_input:
             return results[0]
