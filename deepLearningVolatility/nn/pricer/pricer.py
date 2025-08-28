@@ -709,23 +709,20 @@ class GridNetworkPricer(NeuralSurfacePricer):
                     handle_absorption: bool = True,
                     q: float = 0.0) -> torch.Tensor:
         """
-        Calculate IV on grid via Monte Carlo.
+        Calculate IV on grid via Monte Carlo with path reuse across maturities.
         """
         # Validate parameters
         is_valid, error_msg = self.process.validate_theta(theta)
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Determine dt based on regime or adaptive logic
-        T_min = self.Ts.min().item()
-
-        # Check if fixed regime dt is set (for multi-regime training)
+        # Use fixed regime dt if set (for multi-regime)
         if hasattr(self, 'fixed_regime_dt') and self.fixed_regime_dt is not None:
             dt_base = self.fixed_regime_dt
         elif adaptive_dt:
-            # Enhanced adaptive dt for short maturities
-            if T_min <= 30/365:  # <= 1 month (SHORT regime)
-                dt_base = 3e-5  # Ultra-fine discretization for stability
+            T_min = self.Ts.min().item()
+            if T_min <= 30/365:
+                dt_base = 3e-5
             elif T_min < 1.0:
                 dt_base = 1/1460
             else:
@@ -737,127 +734,133 @@ class GridNetworkPricer(NeuralSurfacePricer):
         if chunk_size is None:
             chunk_size = 50000 if self.device.type == 'cuda' else 20000
         
-        # Initialize grid results
-        iv = torch.zeros(len(self.Ts), len(self.logKs), device=self.device)
+        # Setup: simulate once to T_max, reuse for all maturities
+        T_max = self.Ts.max().item()
+        n_steps_max = max(2, int(np.ceil(T_max / dt_base)))
+        
+        n_T = len(self.Ts)
+        n_K = len(self.logKs)
+        
+        # Initialize results
+        iv = torch.zeros(n_T, n_K, device=self.device)
         
         if handle_absorption and self.process.supports_absorption:
-            absorption_stats = torch.zeros(len(self.Ts), len(self.logKs), device=self.device)
+            absorption_stats = torch.zeros(n_T, n_K, device=self.device)
         
-        # Processes each tenor
+        # Determine total paths (optionally adaptive to shortest maturity)
+        n_paths_total = n_paths
+        if adaptive_paths:
+            T_min = self.Ts.min().item()
+            if T_min <= 0.05:
+                n_paths_total = int(n_paths * 5)
+            elif T_min <= 0.1:
+                n_paths_total = int(n_paths * 3)
+            elif T_min <= 0.25:
+                n_paths_total = int(n_paths * 1.5)
+        
+        # Accumulators for all maturities
+        payoff_sums = torch.zeros(n_T, n_K, device=self.device)
+        n_valid_per_T = torch.zeros(n_T, device=self.device)
+        
+        if control_variate:
+            dS_sums = torch.zeros(n_T, device=self.device)
+            payoff_dS_sums = torch.zeros(n_T, n_K, device=self.device)
+            dS_sq_sums = torch.zeros(n_T, device=self.device)
+        
+        total_paths_processed = 0
+        n_chunks = (n_paths_total + chunk_size - 1) // chunk_size
+        
+        # Process in chunks
+        for chunk_idx in range(n_chunks):
+            current_chunk_size = min(chunk_size, n_paths_total - chunk_idx * chunk_size)
+            
+            # Single simulation up to T_max
+            sim_result = self.process.simulate(
+                theta=theta,
+                n_paths=current_chunk_size,
+                n_steps=n_steps_max,
+                dt=dt_base,
+                init_state=(spot,) if not self.process.requires_variance_state else None,
+                device=self.device,
+                antithetic=use_antithetic
+            )
+            
+            S_chunk = sim_result.spot  # Shape: [n_paths, n_steps]
+            
+            # Process each maturity using the same paths
+            for iT, T in enumerate(self.Ts):
+                T_val = T.item()
+                
+                # Find time index for this maturity
+                time_idx = min(int(np.round(T_val / dt_base)), n_steps_max - 1)
+                
+                # Extract ST at this time
+                ST_chunk = S_chunk[:, time_idx]
+                
+                # Handle absorption if needed
+                if handle_absorption and self.process.supports_absorption:
+                    # Check absorption up to this time point
+                    S_up_to_T = S_chunk[:, :time_idx+1]
+                    _, absorbed_mask = self.process.handle_absorption(S_up_to_T, dt_base)
+                    survived_mask = ~absorbed_mask
+                    n_survived = survived_mask.sum().item()
+                else:
+                    survived_mask = torch.ones(current_chunk_size, dtype=torch.bool, device=self.device)
+                    n_survived = current_chunk_size
+                
+                if n_survived > 0:
+                    ST_valid = ST_chunk[survived_mask]
+                    
+                    # Calculate strikes for this maturity
+                    F_val = spot * math.exp((self.r - q) * T_val)
+                    K_values = F_val * torch.exp(self.logKs)
+                    
+                    # Calculate payoffs for all strikes
+                    payoffs = (ST_valid.unsqueeze(1) - K_values.unsqueeze(0)).clamp(min=0.0)
+                    
+                    # Accumulate statistics
+                    payoff_sums[iT] += payoffs.sum(dim=0)
+                    n_valid_per_T[iT] += n_survived
+                    
+                    if control_variate:
+                        dS = ST_valid - spot
+                        dS_sums[iT] += dS.sum()
+                        payoff_dS_sums[iT] += (payoffs * dS.unsqueeze(1)).sum(dim=0)
+                        dS_sq_sums[iT] += (dS ** 2).sum()
+            
+            total_paths_processed += current_chunk_size
+            
+            # Free memory
+            del S_chunk, sim_result
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
+        
+        # Calculate IVs for all (T, K) pairs
         for iT, T in enumerate(self.Ts):
             T_val = T.item()
             disc = math.exp(-self.r * T_val)
-            
-            # Necessary steps
-            n_steps_T = int(round(T_val / dt_base)) + 1
-            
-            # Adaptive paths number
-            n_paths_T = n_paths
-            if adaptive_paths:
-                if T_val <= 0.05:
-                    n_paths_T = int(n_paths * 5)
-                elif T_val <= 0.1:
-                    n_paths_T = int(n_paths * 3)
-                elif T_val <= 0.25:
-                    n_paths_T = int(n_paths * 1.5)
-            
-            # Pre-calculate all the strikes for this maturity (forward-invariant)
             F_val = spot * math.exp((self.r - q) * T_val)
-            K_values = torch.tensor(F_val, device=self.device) * torch.exp(self.logKs)
             
-            # Initialize accumulators for statistics
-            payoff_sums = torch.zeros(len(self.logKs), device=self.device)
-            n_valid_per_strike = torch.zeros(len(self.logKs), device=self.device)
+            n_valid = n_valid_per_T[iT].item()
             
-            if control_variate:
-                dS_sums = torch.zeros(len(self.logKs), device=self.device)
-                payoff_dS_sums = torch.zeros(len(self.logKs), device=self.device)
-                dS_sq_sums = torch.zeros(len(self.logKs), device=self.device)
-            
-            total_paths_processed = 0
-            
-            n_chunks = (n_paths_T + chunk_size - 1) // chunk_size
-            
-            for chunk_idx in range(n_chunks):
-                current_chunk_size = min(chunk_size, n_paths_T - chunk_idx * chunk_size)
-                
-                # Simulate using the process
-                sim_result = self.process.simulate(
-                    theta=theta,
-                    n_paths=current_chunk_size,
-                    n_steps=n_steps_T,
-                    dt=dt_base,
-                    init_state=(spot,) if not self.process.requires_variance_state else None,
-                    device=self.device,
-                    antithetic=use_antithetic
-                )
-                
-                S_chunk = sim_result.spot
-                
-                # Manage apsorption if supported
-                if handle_absorption and self.process.supports_absorption:
-                    # The handle_absorption method always exists in BaseStochasticProcess
-                    _, absorbed_mask = self.process.handle_absorption(S_chunk, dt_base)
-                    survived_mask = ~absorbed_mask
-                    n_survived_chunk = survived_mask.sum()
-                else:
-                    # All paths survive
-                    survived_mask = torch.ones(current_chunk_size, dtype=torch.bool, device=self.device)
-                    n_survived_chunk = current_chunk_size
-                
-                if n_survived_chunk > 0:
-                    # Extract ST only for surviving paths
-                    ST_chunk = S_chunk[:, -1]
-                    ST_survived = ST_chunk[survived_mask]
-                    
-                    # Calculate payoffs for all strikes
-                    payoffs = (ST_survived.unsqueeze(1) - K_values.unsqueeze(0)).clamp(min=0.0)
-                    
-                    # Accumulate statistics
-                    payoff_sums += payoffs.sum(dim=0)
-                    n_valid_per_strike += n_survived_chunk
-                    
-                    if control_variate:
-                        dS = ST_survived - spot
-                        dS_sums += dS.sum() * torch.ones(len(self.logKs), device=self.device)
-                        
-                        for jK in range(len(self.logKs)):
-                            payoff_dS_sums[jK] += (payoffs[:, jK] * dS).sum()
-                        
-                        dS_sq_sums += (dS ** 2).sum() * torch.ones(len(self.logKs), device=self.device)
-                
-                total_paths_processed += current_chunk_size
-                
-                # Free memory
-                del S_chunk
-                if n_survived_chunk > 0:
-                    del ST_chunk, ST_survived, payoffs
-                if self.device.type == 'cuda':
-                    torch.cuda.empty_cache()
-            
-            # Calculate IV for all strikes
             for jK, k in enumerate(self.logKs):
-                # Strike related to the forward: K = F * exp(k)
                 K = F_val * math.exp(k.item())
-                n_valid = n_valid_per_strike[jK].item()
                 
-                # Fallback if no path survived
+                # Fallback if no paths survived
                 if n_valid == 0:
-                    # Use parameter-based default volatility
-                    default_vol = self._get_default_volatility(theta)
-                    iv[iT, jK] = default_vol
+                    iv[iT, jK] = self._get_default_volatility(theta)
                     if handle_absorption and self.process.supports_absorption:
                         absorption_stats[iT, jK] = 1.0
                     continue
                 
-                # Normalized mean over the total number of paths
-                payoff_mean = payoff_sums[jK] / total_paths_processed
+                # Normalized mean over total paths processed
+                payoff_mean = payoff_sums[iT, jK] / total_paths_processed
                 
                 # Control variate
                 if control_variate and n_valid > 1:
-                    dS_mean = dS_sums[jK] / total_paths_processed
-                    payoff_dS_mean = payoff_dS_sums[jK] / total_paths_processed
-                    dS_var = (dS_sq_sums[jK] / total_paths_processed) - dS_mean**2
+                    dS_mean = dS_sums[iT] / total_paths_processed
+                    payoff_dS_mean = payoff_dS_sums[iT, jK] / total_paths_processed
+                    dS_var = (dS_sq_sums[iT] / total_paths_processed) - dS_mean**2
                     
                     if dS_var > 1e-10:
                         cov = payoff_dS_mean - payoff_mean * dS_mean
@@ -868,8 +871,7 @@ class GridNetworkPricer(NeuralSurfacePricer):
                 else:
                     price_call = payoff_mean * disc
                 
-                # Ensure price above the intrinsic (PV di (F-K)^+)
-                K = F_val * math.exp(k.item())
+                # Ensure price above intrinsic value
                 intrinsic_value = disc * max(0.0, F_val - K)
                 price_call = max(price_call, intrinsic_value + price_floor)
                 
@@ -885,12 +887,12 @@ class GridNetworkPricer(NeuralSurfacePricer):
                             EuropeanOption(
                                 BrownianStock(),
                                 strike=float(K),
-                                maturity=float(T)
+                                maturity=float(T_val)
                             )
                         )
                         iv[iT, jK] = bs.implied_volatility(
                             log_moneyness=-float(k),
-                            time_to_maturity=float(T),
+                            time_to_maturity=float(T_val),
                             price=price_call
                         )
                     except:
@@ -916,7 +918,7 @@ class GridNetworkPricer(NeuralSurfacePricer):
             
             iv = iv_repaired
         
-        # Salva statistiche absorption
+        # Save absorption stats
         if handle_absorption and self.process.supports_absorption:
             self.last_absorption_stats = absorption_stats
         

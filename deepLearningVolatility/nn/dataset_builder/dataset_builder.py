@@ -1340,7 +1340,7 @@ class DatasetBuilder:
                                 )
                             )
                             iv_smile[j] = bs.implied_volatility(
-                                log_moneyness=logK[j].item(),
+                                log_moneyness= -logK[j].item(),
                                 time_to_maturity=T_val,
                                 price=price.item()
                             )
