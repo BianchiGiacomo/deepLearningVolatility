@@ -13,7 +13,7 @@ warnings.filterwarnings('ignore')
 
 class RoughBergomiStabilityMapper:
     """
-    Mappa le regioni di stabilità per i parametri del modello Rough Bergomi
+    Maps the stability regions for the parameters of the Rough Bergomi model
     """
     
     def __init__(self, device='cpu'):
@@ -21,27 +21,27 @@ class RoughBergomiStabilityMapper:
         
     def compute_stability_score(self, theta, test_config):
         """
-        Calcola uno score di stabilità per una combinazione di parametri
-        
+        Computes a stability score for a parameter combination
+
         Returns:
-            float: score tra 0 (instabile) e 1 (stabile)
+            float: score between 0 (unstable) and 1 (stable)
         """
         H, eta, rho, xi0 = theta
         
-        # Check preliminari sui parametri
+        # Preliminary checks on parameters
         alpha = H - 0.5
         
-        # Verifica che alpha sia in un range valido per il modello
-        # alpha molto negativo (H molto piccolo) può causare problemi numerici
+        # Check that alpha is in a valid range for the model
+        # Very negative alpha (very small H) can cause numerical issues
         if alpha < -0.49:  # H < 0.01
             return 0.0
         
-        # Verifica che la matrice di covarianza sarà definita positiva
-        # Questo richiede che dt^(alpha+1) sia ben definito
+        # Check that the covariance matrix will be positive definite
+        # This requires that dt^(alpha+1) is well defined
         if alpha <= -1.0:
             return 0.0
             
-        # Verifica altri parametri
+        # Check other parameters
         if abs(rho) >= 1.0 or eta <= 0 or xi0 <= 0:
             return 0.0
         
@@ -51,25 +51,25 @@ class RoughBergomiStabilityMapper:
         dt = test_config['dt']
         
         try:
-            # Per H molto bassi, usa dt più piccolo per stabilità numerica
+            # For very low H, use smaller dt for numerical stability
             if H < 0.1:
                 dt = min(dt, 1/2920)  # Max 3h steps
                 
-            # Genera una piccola superficie di test
+            # Generate a small test surface
             iv_surface = torch.zeros(len(maturities), len(strikes))
             zero_count = 0
             extreme_count = 0
             total_points = len(maturities) * len(strikes)
             
             for i, T in enumerate(maturities):
-                n_steps = max(3, int(np.ceil(T / dt)))  # Minimo 3 steps
+                n_steps = max(3, int(np.ceil(T / dt)))  # Minimum 3 steps
                 
-                # Per parametri estremi, prova con meno paths per il test
+                # For extreme parameters, try with fewer paths for the test
                 test_paths = min(n_paths, 5000) if H < 0.1 else n_paths
                 
-                # Genera paths con gestione errori
+                # Generate paths with error handling
                 try:
-                    # Assicura che tutti i parametri siano float32
+                    # Ensure all parameters are float32
                     S, V = generate_rough_bergomi(
                         test_paths, n_steps,
                         init_state=(float(1.0), float(xi0)),
@@ -79,20 +79,20 @@ class RoughBergomiStabilityMapper:
                         xi=float(xi0),
                         dt=float(dt),
                         device=self.device,
-                        dtype=torch.float32,  # Forza float32
+                        dtype=torch.float32,  # Force float32
                         antithetic=True
                     )
                     
-                    # Verifica che i paths siano validi
+                    # Check that the paths are valid
                     if torch.isnan(S).any() or torch.isinf(S).any():
                         return 0.0
                         
-                    if (S <= 0).any():
-                        return 0.0
+                    # if (S <= 0).any():
+                    #     return 0.0
                     
                     ST = S[:, -1]
                 except Exception as e:
-                    # Se la generazione fallisce per questo set di parametri
+                    # If generation fails for this parameter set
                     return 0.0
                 
                 for j, logK in enumerate(strikes):
@@ -115,7 +115,6 @@ class RoughBergomiStabilityMapper:
                                 price=price
                             )
                             
-                            # Controlla se IV è ragionevole
                             if 0.01 < iv < 2.0:
                                 iv_surface[i, j] = iv
                             else:
@@ -126,17 +125,17 @@ class RoughBergomiStabilityMapper:
                     else:
                         zero_count += 1
             
-            # Calcola metriche di stabilità
+            # Compute stability metrics
             valid_ivs = iv_surface[iv_surface > 0]
             
             if len(valid_ivs) == 0:
                 return 0.0
             
-            # Score basato su:
-            # 1. Percentuale di valori validi
+            # Score based on:
+            # 1. Percentage of valid values
             valid_ratio = len(valid_ivs) / total_points
             
-            # 2. Smoothness dello smile (variazione tra strikes adiacenti)
+            # 2. Smile smoothness (variation between adjacent strikes)
             smoothness_scores = []
             for i in range(len(maturities)):
                 smile = iv_surface[i]
@@ -148,11 +147,11 @@ class RoughBergomiStabilityMapper:
             
             avg_smoothness = np.mean(smoothness_scores) if smoothness_scores else 0
             
-            # 3. Range ragionevole di IV
+            # 3. Reasonable IV range
             iv_std = valid_ivs.std().item()
             range_score = 1.0 / (1.0 + max(0, iv_std - 0.5))
             
-            # Combina scores
+            # Combine scores
             stability_score = valid_ratio * 0.5 + avg_smoothness * 0.3 + range_score * 0.2
             
             return stability_score
@@ -164,9 +163,9 @@ class RoughBergomiStabilityMapper:
     def map_2d_stability(self, param1_name, param1_range, param2_name, param2_range,
                         fixed_params, n_grid=20, test_regime='short'):
         """
-        Crea una mappa 2D di stabilità variando due parametri
+        Creates a 2D stability map by varying two parameters
         """
-        # Configurazione di test basata sul regime
+        # Test configuration based on regime
         if test_regime == 'short':
             test_config = {
                 'maturities': [7/365, 14/365, 30/365],
@@ -189,13 +188,13 @@ class RoughBergomiStabilityMapper:
                 'dt': 1/365
             }
         
-        # Griglia di parametri
+        # Parameter grid
         param1_vals = np.linspace(param1_range[0], param1_range[1], n_grid)
         param2_vals = np.linspace(param2_range[0], param2_range[1], n_grid)
         
         stability_map = np.zeros((n_grid, n_grid))
         
-        # Mapping nome parametro -> indice
+        # Mapping parameter name -> index
         param_idx = {'H': 0, 'eta': 1, 'rho': 2, 'xi0': 3}
         
         print(f"Mapping stability for {param1_name} vs {param2_name} ({test_regime} regime)")
@@ -207,12 +206,12 @@ class RoughBergomiStabilityMapper:
         
         for i, p1 in enumerate(param1_vals):
             for j, p2 in enumerate(param2_vals):
-                # Costruisci theta
+                # Build theta
                 theta = list(fixed_params)
                 theta[param_idx[param1_name]] = p1
                 theta[param_idx[param2_name]] = p2
                 
-                # Calcola stabilità
+                # Compute stability
                 score = self.compute_stability_score(theta, test_config)
                 stability_map[i, j] = score
                 
@@ -225,12 +224,12 @@ class RoughBergomiStabilityMapper:
     def plot_stability_map(self, stability_map, param1_vals, param2_vals,
                           param1_name, param2_name, title=None):
         """
-        Visualizza la mappa di stabilità con zone colorate
+        Displays the stability map with colored zones
         """
         fig, ax = plt.subplots(figsize=(10, 8))
         
-        # Usa colormap con soglie chiare
-        # Rosso = instabile (< 0.3), Giallo = marginale (0.3-0.7), Verde = stabile (> 0.7)
+        # Use colormap with clear thresholds
+        # Red = unstable (< 0.3), Yellow = marginal (0.3-0.7), Green = stable (> 0.7)
         cmap = plt.cm.RdYlGn
         
         im = ax.imshow(stability_map.T, origin='lower', cmap=cmap,
@@ -238,13 +237,13 @@ class RoughBergomiStabilityMapper:
                              param2_vals[0], param2_vals[-1]],
                       aspect='auto', vmin=0, vmax=1)
         
-        # Aggiungi contorni per le zone
+        # Add contours for the zones
         contour_levels = [0.3, 0.7]
         contours = ax.contour(param1_vals, param2_vals, stability_map.T,
                             levels=contour_levels, colors='black', linewidths=2)
         ax.clabel(contours, inline=True, fontsize=10, fmt='%.1f')
         
-        # Labels e titolo
+        # Labels and title
         ax.set_xlabel(f'{param1_name}', fontsize=12)
         ax.set_ylabel(f'{param2_name}', fontsize=12)
         
@@ -253,45 +252,45 @@ class RoughBergomiStabilityMapper:
         else:
             ax.set_title(f'Stability Map: {param1_name} vs {param2_name}', fontsize=14, pad=20)
         
-        # Colorbar con labels
+        # Colorbar with labels
         cbar = plt.colorbar(im, ax=ax, label='Stability Score')
         cbar.set_ticks([0, 0.3, 0.7, 1.0])
         cbar.set_ticklabels(['Unstable', 'Marginal', 'Stable', 'Excellent'])
         
-        # Aggiungi griglia
+        # Add grid
         ax.grid(True, alpha=0.3, linestyle='--')
         
-        # Aggiungi annotazioni per zone problematiche
+        # Add annotations for problematic zones
         self._annotate_problematic_zones(ax, stability_map, param1_vals, param2_vals)
         
         plt.tight_layout()
         return fig, ax
     
     def _annotate_problematic_zones(self, ax, stability_map, param1_vals, param2_vals):
-        """Evidenzia zone particolarmente problematiche"""
-        # Trova zone con score < 0.1
+        """Highlight particularly problematic zones"""
+        # Find zones with score < 0.1
         very_bad = stability_map < 0.1
         
         if very_bad.any():
-            # Trova cluster di punti problematici
+            # Find clusters of problematic points
             from scipy import ndimage
             labeled, num_features = ndimage.label(very_bad)
             
             for i in range(1, num_features + 1):
                 mask = labeled == i
-                if mask.sum() > 4:  # Solo cluster significativi
-                    # Trova bounding box
+                if mask.sum() > 4:  # Only significant clusters
+                    # Find bounding box
                     rows, cols = np.where(mask)
                     min_row, max_row = rows.min(), rows.max()
                     min_col, max_col = cols.min(), cols.max()
                     
-                    # Converti in coordinate parametri
+                    # Convert to parameter coordinates
                     p1_min = param1_vals[min_row]
                     p1_max = param1_vals[max_row]
                     p2_min = param2_vals[min_col]
                     p2_max = param2_vals[max_col]
                     
-                    # Disegna rettangolo
+                    # Draw rectangle
                     rect = Rectangle((p1_min, p2_min), 
                                    p1_max - p1_min, 
                                    p2_max - p2_min,
@@ -301,9 +300,9 @@ class RoughBergomiStabilityMapper:
     
     def full_parameter_analysis(self, n_grid=15):
         """
-        Analisi completa di tutte le combinazioni di parametri
+        Complete analysis of all parameter combinations
         """
-        # Parametri di default "sicuri"
+        # Default "safe" parameters
         default_params = {
             'H': 0.25,
             'eta': 1.5,
@@ -311,7 +310,7 @@ class RoughBergomiStabilityMapper:
             'xi0': 0.1
         }
         
-        # Range dei parametri
+        # Parameter ranges
         param_ranges = {
             'H': (0.05, 0.45),
             'eta': (0.5, 3.0),
@@ -319,7 +318,7 @@ class RoughBergomiStabilityMapper:
             'xi0': (0.02, 0.20)
         }
         
-        # Combinazioni da testare
+        # Pairs to test
         param_pairs = [
             ('H', 'eta'),
             ('H', 'rho'),
@@ -338,14 +337,14 @@ class RoughBergomiStabilityMapper:
             
             regime_results = {}
             
-            # Crea subplot per questo regime
+            # Create subplot for this regime
             fig, axes = plt.subplots(2, 3, figsize=(18, 12))
             axes = axes.flatten()
             
             for idx, (param1, param2) in enumerate(param_pairs):
                 print(f"\nMapping {param1} vs {param2}...")
                 
-                # Parametri fissi
+                # Fixed parameters
                 fixed = default_params.copy()
                 del fixed[param1]
                 del fixed[param2]
@@ -354,7 +353,7 @@ class RoughBergomiStabilityMapper:
                             fixed.get('rho', -0.5), 
                             fixed.get('xi0', 0.1)]
                 
-                # Calcola mappa
+                # Compute map
                 stability_map, p1_vals, p2_vals = self.map_2d_stability(
                     param1, param_ranges[param1],
                     param2, param_ranges[param2],
@@ -367,14 +366,14 @@ class RoughBergomiStabilityMapper:
                     'param2_vals': p2_vals
                 }
                 
-                # Plot su subplot
+                # Plot on subplot
                 ax = axes[idx]
                 im = ax.imshow(stability_map.T, origin='lower', cmap='RdYlGn',
                              extent=[p1_vals[0], p1_vals[-1],
                                     p2_vals[0], p2_vals[-1]],
                              aspect='auto', vmin=0, vmax=1)
                 
-                # Contorni
+                # Contours
                 contours = ax.contour(p1_vals, p2_vals, stability_map.T,
                                     levels=[0.3, 0.7], colors='black', linewidths=1.5)
                 
@@ -396,7 +395,7 @@ class RoughBergomiStabilityMapper:
     
     def find_safe_regions(self, results, threshold=0.7):
         """
-        Trova regioni sicure comuni a tutti i regimi
+        Finds safe regions common to all regimes
         """
         print("\n" + "="*60)
         print("SAFE PARAMETER REGIONS (score > {:.1f})".format(threshold))
@@ -409,7 +408,7 @@ class RoughBergomiStabilityMapper:
             
             print(f"\n{pair_name.replace('_', ' ')}:")
             
-            # Combina mappe da tutti i regimi
+            # Combine maps from all regimes
             combined_map = None
             
             for regime in ['short', 'mid', 'long']:
@@ -419,11 +418,11 @@ class RoughBergomiStabilityMapper:
                 else:
                     combined_map = np.minimum(combined_map, regime_map)
             
-            # Trova regioni sicure
+            # Find safe regions
             safe_mask = combined_map > threshold
             
             if safe_mask.any():
-                # Estrai ranges
+                # Extract ranges
                 param1_vals = results['short'][pair_name]['param1_vals']
                 param2_vals = results['short'][pair_name]['param2_vals']
                 
@@ -450,13 +449,13 @@ class RoughBergomiStabilityMapper:
     
     def suggest_parameter_constraints(self, safe_regions):
         """
-        Suggerisce vincoli sui parametri basati sull'analisi
+        Suggests parameter constraints based on the analysis
         """
         print("\n" + "="*60)
         print("SUGGESTED PARAMETER CONSTRAINTS")
         print("="*60)
         
-        # Raccogli tutti i range sicuri per ogni parametro
+        # Collect all safe ranges for each parameter
         param_constraints = {
             'H': [], 'eta': [], 'rho': [], 'xi0': []
         }
@@ -469,12 +468,12 @@ class RoughBergomiStabilityMapper:
                 param_constraints[param1_name].append(region_data['param1_range'])
                 param_constraints[param2_name].append(region_data['param2_range'])
         
-        # Trova intersezione dei range sicuri
+        # Find intersection of safe ranges
         final_constraints = {}
         
         for param, ranges in param_constraints.items():
             if ranges:
-                # Prendi l'intersezione più conservativa
+                # Take the most conservative intersection
                 min_val = max(r[0] for r in ranges)
                 max_val = min(r[1] for r in ranges)
                 
@@ -485,7 +484,7 @@ class RoughBergomiStabilityMapper:
                 else:
                     print(f"\n{param}: No consistent safe range found")
         
-        # Suggerimenti specifici
+        # Specific recommendations
         print("\n" + "-"*40)
         print("SPECIFIC RECOMMENDATIONS:")
         print("-"*40)
@@ -501,34 +500,33 @@ class RoughBergomiStabilityMapper:
         if 'xi0' in final_constraints:
             if final_constraints['xi0'][0] > 0.05:
                 print("- Ensure sufficient initial volatility (xi0 > 0.05)")
-        
+    
         return final_constraints
 
 
-# Funzione principale per eseguire l'analisi completa
 def run_stability_analysis(device='cpu', n_grid=20):
     """
-    Esegue un'analisi completa di stabilità
+    Runs a complete stability analysis
     """
     mapper = RoughBergomiStabilityMapper(device)
     
-    # 1. Analisi completa
+    # 1. Complete analysis
     print("Starting full parameter stability analysis...")
     results = mapper.full_parameter_analysis(n_grid=n_grid)
     
-    # 2. Trova regioni sicure
+    # 2. Find safe regions
     safe_regions = mapper.find_safe_regions(results, threshold=0.7)
     
-    # 3. Suggerisci vincoli
+    # 3. Suggest constraints
     constraints = mapper.suggest_parameter_constraints(safe_regions)
     
-    # 4. Test di verifica con parametri suggeriti
+    # 4. Verification test with suggested parameters
     if constraints:
         print("\n" + "="*60)
         print("VERIFICATION TEST")
         print("="*60)
         
-        # Crea un theta nel centro della regione sicura
+        # Create a theta in the center of the safe region
         safe_theta = []
         param_names = ['H', 'eta', 'rho', 'xi0']
         default_vals = [0.25, 1.5, -0.5, 0.1]
@@ -543,7 +541,7 @@ def run_stability_analysis(device='cpu', n_grid=20):
         print(f"Testing safe parameters: H={safe_theta[0]:.3f}, eta={safe_theta[1]:.3f}, "
               f"rho={safe_theta[2]:.3f}, xi0={safe_theta[3]:.3f}")
         
-        # Test su tutti i regimi
+        # Test on all regimes
         for regime in ['short', 'mid', 'long']:
             test_config = {
                 'short': {
@@ -573,12 +571,12 @@ def run_stability_analysis(device='cpu', n_grid=20):
 
 
 if __name__ == "__main__":
-    # Esegui analisi
+    # Run analysis
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    # Test veloce con griglia piccola
+    # Quick test with small grid
     print("Running quick stability analysis...")
     results, safe_regions, constraints = run_stability_analysis(device, n_grid=10)
     
-    # Per analisi più dettagliata, usa n_grid=20 o 30
+    # For more detailed analysis, use n_grid=20 or 30
     # results, safe_regions, constraints = run_stability_analysis(device, n_grid=20)

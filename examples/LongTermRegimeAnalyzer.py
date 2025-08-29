@@ -12,21 +12,21 @@ from deepLearningVolatility.stochastic.wrappers.rough_bergomi_wrapper import Rou
 
 class LongTermRegimeAnalyzer:
     """
-    Analizza specificamente il comportamento del regime long term
-    con focus su absorption e stabilità
+    Specifically analyzes the behavior of the long term regime
+    with a focus on absorption and stability
     """
     
     def __init__(self, device='cpu'):
         self.device = torch.device(device) if isinstance(device, str) else device
         
-        # Configurazione specifica per long term
+        # Specific configuration for long term
         self.long_maturities = torch.tensor([1.0, 1.5, 2.0, 3.0, 5.0], device=device)
         self.long_logK = torch.linspace(-0.5, 0.5, 15, device=device)
         
     def test_single_configuration(self, pricer, theta, n_paths=50000, 
                                  handle_absorption=True, verbose=True):
         """
-        Testa una singola configurazione di parametri
+        Tests a single parameter configuration
         """
         H, eta, rho, xi0 = theta
         
@@ -34,7 +34,7 @@ class LongTermRegimeAnalyzer:
             print(f"\nTesting theta: H={H:.3f}, eta={eta:.3f}, rho={rho:.3f}, xi0={xi0:.3f}")
             print("-" * 60)
         
-        # Test senza absorption handling
+        # Test without absorption handling
         iv_no_abs = pricer._mc_iv_grid(
             torch.tensor(theta, device=self.device),
             n_paths=n_paths,
@@ -43,7 +43,7 @@ class LongTermRegimeAnalyzer:
             chunk_size=10000
         )
         
-        # Test con absorption handling
+        # Test with absorption handling
         iv_with_abs = pricer._mc_iv_grid(
             torch.tensor(theta, device=self.device),
             n_paths=n_paths,
@@ -52,7 +52,7 @@ class LongTermRegimeAnalyzer:
             chunk_size=10000
         )
         
-        # Ottieni statistiche di absorption se disponibili
+        # Get absorption statistics if available
         absorption_stats = None
         if hasattr(pricer, 'last_absorption_stats'):
             absorption_stats = pricer.last_absorption_stats.cpu().numpy()
@@ -92,7 +92,7 @@ class LongTermRegimeAnalyzer:
             print(f"  Max absorption: {abs_stats.max():.1%}")
             print(f"  Points with >50% absorption: {(abs_stats > 0.5).sum()}")
             
-            # Analisi per maturity
+            # Analysis by maturity
             for i, T in enumerate(self.long_maturities):
                 abs_row = abs_stats[i, :]
                 print(f"  T={T:.1f}y: mean={abs_row.mean():.1%}, max={abs_row.max():.1%}")
@@ -105,7 +105,7 @@ class LongTermRegimeAnalyzer:
         fig.suptitle(f'Long Term Analysis - H={theta[0]:.3f}, eta={theta[1]:.3f}, '
                      f'rho={theta[2]:.3f}, xi0={theta[3]:.3f}', fontsize=16)
         
-        # 1. Surface senza absorption handling
+        # 1. Surface without absorption handling
         ax = axes[0, 0]
         im1 = ax.imshow(results['iv_no_absorption'], aspect='auto', origin='lower',
                        cmap='viridis', vmin=0, vmax=0.6)
@@ -114,7 +114,7 @@ class LongTermRegimeAnalyzer:
         ax.set_ylabel('Maturity Index')
         plt.colorbar(im1, ax=ax)
         
-        # 2. Surface con absorption handling
+        # 2. Surface with absorption handling
         ax = axes[0, 1]
         im2 = ax.imshow(results['iv_with_absorption'], aspect='auto', origin='lower',
                        cmap='viridis', vmin=0, vmax=0.6)
@@ -123,7 +123,7 @@ class LongTermRegimeAnalyzer:
         ax.set_ylabel('Maturity Index')
         plt.colorbar(im2, ax=ax)
         
-        # 3. Differenza
+        # 3. Difference
         ax = axes[0, 2]
         diff = results['difference']
         im3 = ax.imshow(diff, aspect='auto', origin='lower',
@@ -144,9 +144,9 @@ class LongTermRegimeAnalyzer:
             cbar = plt.colorbar(im4, ax=ax)
             cbar.set_label('Fraction Absorbed')
         
-        # 5. Smile comparison per maturity più lunga
+        # 5. Smile comparison for the longest maturity
         ax = axes[1, 1]
-        mat_idx = -1  # Ultima maturity (5Y)
+        mat_idx = -1 
         smile_no_abs = results['iv_no_absorption'][mat_idx, :]
         smile_with_abs = results['iv_with_absorption'][mat_idx, :]
         
@@ -171,8 +171,6 @@ class LongTermRegimeAnalyzer:
             ax.set_ylabel('Mean Absorption Ratio')
             ax.set_title('Absorption by Maturity')
             ax.grid(True, alpha=0.3, axis='y')
-            
-            # Aggiungi linea di warning
             ax.axhline(y=0.5, color='r', linestyle='--', label='50% threshold')
             ax.legend()
         
@@ -184,13 +182,13 @@ class LongTermRegimeAnalyzer:
     
     def parameter_sweep_long_term(self, pricer, n_grid=10):
         """
-        Sweep dei parametri specifico per long term
+        Parameter sweep specific for long term
         """
-        # Range adattati per long term (più conservativi)
-        H_range = np.linspace(0.1, 0.4, n_grid)  # Evita H troppo bassi
-        xi0_range = np.linspace(0.05, 0.15, n_grid)  # xi0 più alti per long term
+        # Ranges adapted for long term (more conservative)
+        H_range = np.linspace(0.1, 0.4, n_grid)  # Avoid too low H
+        xi0_range = np.linspace(0.05, 0.15, n_grid)  # Higher xi0 for long term
         
-        # Fixed parameters più stabili
+        # More stable fixed parameters
         eta_fixed = 1.5
         rho_fixed = -0.5
         
@@ -209,19 +207,19 @@ class LongTermRegimeAnalyzer:
                 theta = [H, eta_fixed, rho_fixed, xi0]
                 
                 try:
-                    # Test con absorption handling
+                    # Test with absorption handling
                     iv_surface = pricer._mc_iv_grid(
                         torch.tensor(theta, device=self.device),
-                        n_paths=10000,  # Meno paths per sweep veloce
+                        n_paths=10000,  # Fewer paths for fast sweep
                         handle_absorption=True,
                         adaptive_dt=True
                     )
                     
-                    # Calcola metriche
+                    # Calculate metrics
                     iv_np = iv_surface.cpu().numpy()
                     results_grid[i, j, 0] = iv_np[iv_np > 0].mean() if (iv_np > 0).any() else 0
                     results_grid[i, j, 1] = iv_np[iv_np > 0].std() if (iv_np > 0).any() else 0
-                    results_grid[i, j, 2] = (iv_np == 0).sum() / iv_np.size  # Frazione di zeri
+                    results_grid[i, j, 2] = (iv_np == 0).sum() / iv_np.size  # Fraction of zeros
                     
                     if hasattr(pricer, 'last_absorption_stats'):
                         results_grid[i, j, 3] = pricer.last_absorption_stats.mean().item()
@@ -237,7 +235,7 @@ class LongTermRegimeAnalyzer:
         return results_grid, H_range, xi0_range
     
     def plot_parameter_sweep(self, results_grid, H_range, xi0_range, save_path=None):
-        """Visualizza risultati del parameter sweep"""
+        """Displays results of the parameter sweep"""
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
         
         metrics = ['Mean IV', 'Std IV', 'Zero Fraction', 'Mean Absorption']
@@ -255,7 +253,7 @@ class LongTermRegimeAnalyzer:
             
             plt.colorbar(im, ax=ax)
             
-            # Aggiungi contorni per valori problematici
+            # Add contours for problematic values
             if idx == 2:  # Zero fraction
                 contours = ax.contour(H_range, xi0_range, data, levels=[0.1, 0.3, 0.5],
                                     colors='black', linewidths=1)
@@ -275,13 +273,13 @@ class LongTermRegimeAnalyzer:
     def recommend_safe_parameters_long(self, results_grid, H_range, xi0_range, 
                                      max_absorption=0.3, max_zeros=0.1):
         """
-        Raccomanda parametri sicuri per long term
+        Recommends safe parameters for long term
         """
         print("\n" + "="*60)
         print("SAFE PARAMETER RECOMMENDATIONS FOR LONG TERM")
         print("="*60)
         
-        # Trova regioni sicure
+        # Find safe regions
         safe_mask = (results_grid[:, :, 2] < max_zeros) & \
                    (results_grid[:, :, 3] < max_absorption) & \
                    ~np.isnan(results_grid[:, :, 0])
@@ -298,10 +296,10 @@ class LongTermRegimeAnalyzer:
             print(f"  H:   [{H_min:.3f}, {H_max:.3f}]")
             print(f"  xi0: [{xi0_min:.3f}, {xi0_max:.3f}]")
             
-            # Trova configurazione ottimale
+            # Find optimal configuration
             safe_results = results_grid[safe_mask]
             
-            # Ottimizza per: bassa absorption, pochi zeri, IV stabile
+            # Optimize for: low absorption, few zeros, stable IV
             score = -safe_results[:, 3] - safe_results[:, 2] - 0.1 * safe_results[:, 1]
             best_idx = np.argmax(score)
             
@@ -322,18 +320,18 @@ class LongTermRegimeAnalyzer:
             print("  - Reducing strike range for long maturities")
 
 
-# Funzione principale per eseguire l'analisi
+# Main function to run the analysis
 def analyze_long_term_regime(device='cpu'):
     """
     Analisi completa del regime long term
     """
-    # Crea pricer per long term
+    # Create pricer for long term
     from deepLearningVolatility.stochastic import generate_rough_bergomi
     
     analyzer = LongTermRegimeAnalyzer(device)
     
-    # Crea un GridNetworkPricer per long term
-    # (assumendo che tu abbia già la classe con le modifiche per absorption)
+    # Create a GridNetworkPricer for long term
+    # (assuming you already have the class with absorption modifications)
     rb_process = ProcessFactory.create('rough_bergomi', spot=1.0)
     long_pricer = GridNetworkPricer(
         maturities=analyzer.long_maturities,
@@ -343,15 +341,15 @@ def analyze_long_term_regime(device='cpu'):
         device=device
     )
     
-    # Test 1: Confronto singole configurazioni
+    # Test 1: Single configuration comparison
     print("="*60)
     print("TEST 1: Single Configuration Analysis")
     print("="*60)
     
     test_thetas = [
-        [0.25, 1.8, -0.5, 0.08],      # Problematico
-        [0.15, 2.0, -0.7, 0.15],      # Intermedio
-        [0.3, 1.5, -0.4, 0.15],        # Sicuro
+        [0.25, 1.8, -0.5, 0.08],
+        [0.15, 2.0, -0.7, 0.15],
+        [0.3, 1.5, -0.4, 0.15],
     ]
     
     all_results = []
@@ -377,14 +375,14 @@ def analyze_long_term_regime(device='cpu'):
     return analyzer, all_results, results_grid
 
 
-# Esempio di utilizzo
+# Example usage
 if __name__ == "__main__":
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    # Esegui analisi
+    # Run analysis
     analyzer, results, param_grid = analyze_long_term_regime(device)
     
-    # Salva risultati
+    # Save results
     import pickle
     with open('long_term_analysis_results.pkl', 'wb') as f:
         pickle.dump({
