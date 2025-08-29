@@ -1,5 +1,5 @@
 """
-Wrapper per il modello Merton Jump Diffusion.
+Wrapper for the Merton Jump Diffusion model.
 """
 import torch
 from torch import Tensor
@@ -13,9 +13,9 @@ from deepLearningVolatility.stochastic.merton_jump import generate_merton_jump
 
 class MertonJumpProcess(BaseStochasticProcess):
     """
-    Wrapper per il modello Merton Jump Diffusion.
+    Wrapper for the Merton Jump Diffusion model.
     
-    Parametri theta:
+    Theta parameters:
         - mu: Drift
         - sigma: Volatility
         - jump_per_year: Average number of jumps per year
@@ -53,11 +53,11 @@ class MertonJumpProcess(BaseStochasticProcess):
     
     @property
     def supports_absorption(self) -> bool:
-        return False  # Merton non tocca zero (jumps log-normali)
+        return False  # Merton does not touch zero (log-normal jumps)
     
     @property
     def requires_variance_state(self) -> bool:
-        return False  # Solo stato del prezzo
+        return False  # Only price state
     
     def simulate(self,
                  theta: Tensor,
@@ -70,20 +70,20 @@ class MertonJumpProcess(BaseStochasticProcess):
                  antithetic: bool = False,
                  **kwargs) -> SimulationOutput:
         """
-        Simula il processo Merton Jump Diffusion.
+        Simulate the Merton Jump Diffusion process.
         """
-        # Valida parametri
+        # Validate parameters
         is_valid, error_msg = self.validate_theta(theta)
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Estrai parametri
+        # Extract parameters
         mu, sigma, jump_per_year, jump_mean, jump_std = theta.tolist()
         
-        # Prepara stato iniziale
+        # Prepare initial state
         init_state = self.prepare_init_state(init_state)
         
-        # Simula
+        # Simulate
         try:
             spot_paths = generate_merton_jump(
                 n_paths=n_paths,
@@ -100,7 +100,7 @@ class MertonJumpProcess(BaseStochasticProcess):
                 **kwargs  # engine, etc.
             )
             
-            # Merton ritorna solo spot paths
+            # Merton returns only spot paths
             return SimulationOutput(
                 spot=spot_paths,
                 variance=None,
@@ -111,7 +111,7 @@ class MertonJumpProcess(BaseStochasticProcess):
             raise RuntimeError(f"Merton Jump simulation failed: {str(e)}") from e
 
 
-# Registra il processo
+# Register the process
 ProcessFactory.register(
     'merton_jump', MertonJumpProcess,
     aliases=['merton', 'mertonjump', 'merton-jump', 'merton_jump_process', 'mertonjumpprocess']

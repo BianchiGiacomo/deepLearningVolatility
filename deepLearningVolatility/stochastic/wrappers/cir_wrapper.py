@@ -1,5 +1,5 @@
 """
-Wrapper per il processo Cox-Ingersoll-Ross.
+Wrapper for the Cox-Ingersoll-Ross process.
 """
 import torch
 from torch import Tensor
@@ -12,9 +12,9 @@ from deepLearningVolatility.stochastic.cir import generate_cir
 
 class CIRProcess(BaseStochasticProcess):
     """
-    Wrapper per il processo CIR (usato per tassi/volatilità).
+    Wrapper for the CIR process (used for rates/volatility).
     
-    Parametri theta:
+    Theta parameters:
         - kappa: Mean reversion speed
         - theta: Long-term mean
         - sigma: Volatility of volatility
@@ -46,11 +46,11 @@ class CIRProcess(BaseStochasticProcess):
     
     @property
     def supports_absorption(self) -> bool:
-        return True  # CIR può toccare zero
+        return True  # CIR can reach zero
     
     @property
     def requires_variance_state(self) -> bool:
-        return False  # CIR è single-factor
+        return False  # CIR is single-factor
     
     def simulate(self,
                  theta: Tensor,
@@ -62,25 +62,25 @@ class CIRProcess(BaseStochasticProcess):
                  dtype: Optional[torch.dtype] = None,
                  antithetic: bool = False,
                  **kwargs) -> SimulationOutput:
-        """Simula il processo CIR."""
+        """Simulate the CIR process."""
         
-        # Valida parametri
+        # Validate parameters
         is_valid, error_msg = self.validate_theta(theta)
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Estrai parametri
+        # Extract parameters
         kappa, theta_param, sigma = theta.tolist()
         
-        # Prepara stato iniziale
+        # Prepare initial state
         init_state = self.prepare_init_state(init_state)
         
-        # Nota: CIR usa il metodo QE che non supporta direttamente antithetic
-        # Ma possiamo passare il flag per future implementazioni
+         # Note: CIR uses the QE method which does not directly support antithetic
+        # But we can pass the flag for future implementations
         if antithetic:
             print("Warning: CIR implementation doesn't support antithetic variables yet")
         
-        # Simula
+        # Simulate
         try:
             paths = generate_cir(
                 n_paths=n_paths,
@@ -104,7 +104,7 @@ class CIRProcess(BaseStochasticProcess):
             raise RuntimeError(f"CIR simulation failed: {str(e)}") from e
 
 
-# Registra il processo
+# Register the process
 ProcessFactory.register(
     'cir', CIRProcess,
     aliases=['cir_process', 'cirprocess', 'cox_ingersoll_ross',

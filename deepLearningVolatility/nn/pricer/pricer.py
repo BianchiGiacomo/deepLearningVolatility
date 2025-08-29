@@ -944,7 +944,7 @@ class GridNetworkPricer(NeuralSurfacePricer):
     
     # All other methods remain unchanged...
     def forward(self, theta: torch.Tensor) -> torch.Tensor:
-        """Forward pass della rete."""
+        """Network forward pass."""
         batch_size = theta.shape[0]
         out = self.net(theta)
         return out.view(batch_size, len(self.Ts), len(self.logKs))
@@ -1763,7 +1763,7 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
             'total_points_repaired': stats['total_repaired'],
             'total_points': stats['total_points'],
             'repair_percentage': f"{stats['repair_ratio']*100:.1f}%",
-            'problematic_maturities': stats['problematic_maturities']  # Indici, non valori
+            'problematic_maturities': stats['problematic_maturities']
         }
 
     def save(self, path: str, include_norm_stats: bool = False):

@@ -505,7 +505,7 @@ class DatasetBuilder:
         # Check if the final dataset already exists
         final_dataset_path = f"{ds_dir}/{self.process_name}_grid_dataset_final.pkl"
         if os.path.exists(final_dataset_path):
-            print(f"✓ Dataset finale già esistente per {self.process.__class__.__name__} ({split})!")
+            print(f"✓ Final dataset already exists for {self.process.__class__.__name__} ({split})!")
             return self._load_final_dataset(final_dataset_path, normalize, compute_stats_from)
         
         # Initialize checkpoint manager with process-specific prefix
@@ -528,7 +528,7 @@ class DatasetBuilder:
             print(f"Resuming from sample {start_idx}/{n_samples}")
             
             if start_idx >= n_samples:
-                print("Dataset già completo!")
+                print("Already complete dataset!")
                 return self._process_completed_dataset(
                     all_theta, all_iv, normalize, compute_stats_from, split=split
                 )
@@ -1332,6 +1332,9 @@ class DatasetBuilder:
                     # Calculate IV
                     if price > 1e-10:
                         try:
+                            from deepLearningVolatility.nn.modules.bs.black_scholes import BlackScholes
+                            from deepLearningVolatility.instruments.derivative.european import EuropeanOption
+                            from deepLearningVolatility.instruments.primary.brownian import BrownianStock
                             bs = BlackScholes(
                                 EuropeanOption(
                                     BrownianStock(),
@@ -1351,6 +1354,7 @@ class DatasetBuilder:
                 
                 # Apply smile repair if needed
                 if self.enable_smile_repair:
+                    from deepLearningVolatility.nn.pricer import SmileRepair
                     iv_smile_np = iv_smile.cpu().numpy()
                     logK_np = logK.cpu().numpy()
                     iv_repaired, _ = SmileRepair.repair_smile_simple(
@@ -1401,10 +1405,10 @@ class DatasetBuilder:
         thetas_total = None
         
         if resume_from == 'latest':
-            # Cerca l'ultimo checkpoint nel sottocartella train/val (ordinamento numerico)
+            # Find the last checkpoint in the train/val subfolder (numeric sort order)
             pattern = rf'^{proc_slug}_pointwise_checkpoint_(\d+)(?:\.pkl)?$'
             cands = [f for f in os.listdir(checkpoint_dir) if re.match(pattern, f)]
-            # fallback per compatibilità retro: cerca anche nel padre (senza split) se non trovi nulla
+            # Fallback for backward compatibility: also search the parent (without split) if you don't find anything
             if not cands:
                 parent_dir = os.path.dirname(checkpoint_dir)  # .../random_grids
                 if os.path.isdir(parent_dir):
@@ -1644,7 +1648,7 @@ class DatasetBuilder:
             T_t = torch.tensor(T, dtype=torch.float32, device=self.device)
             strikes = self._sample_random_strikes(T, spot, n_strikes_per_smile)
             logK = torch.log(strikes / spot)
-            # theta corrente
+            # current theta
             theta = thetas[i - start_idx]
             pricer = GridNetworkPricer(
                 maturities=T_t.unsqueeze(0),
@@ -1742,7 +1746,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         self.dataset_type = (dataset_type or "train").lower()
         if self.dataset_type in ("validation", "valid"):
             self.dataset_type = "val"
-        assert self.dataset_type in ("train", "val"), "dataset_type deve essere 'train' o 'val'"
+        assert self.dataset_type in ("train", "val"), "dataset_type must be 'train' or 'val'"
 
         # Add subfolders per phase (train/val) to all output directories
         if self.output_dir:
@@ -1844,7 +1848,7 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         if self.output_dir:
             final_path = os.path.join(self.regime_dirs['unified'], "multi_regime_dataset_final.pkl")
             if os.path.exists(final_path) and not resume_from and not force_regenerate:
-                print(f"✓ Multi-regime dataset {phase} già esistente per {self.process.__class__.__name__}!")
+                print(f"✓ Multi-regime dataset {phase} already exists for {self.process.__class__.__name__}!")
                 return self._load_final_multi_regime_dataset(final_path, normalize, compute_stats_from)
 
         # Separate checkpoint manager per phase
@@ -1905,21 +1909,21 @@ class MultiRegimeDatasetBuilder(DatasetBuilder):
         all_complete = all(done[reg] >= targets[reg] for reg in ['short', 'mid', 'long'])
         
         if all_complete:
-            print("Dataset già completo per tutti i regimi!")
+            print("Dataset already complete for all regimes!")
             return self._process_completed_multi_regime_dataset(
                 all_data, normalize, compute_stats_from
             )
         
-        print("\nStato dataset:")
+        print("\nDataset status:")
         for reg in ['short', 'mid', 'long']:
-            status = "✓ COMPLETO" if done[reg] >= targets[reg] else f"INCOMPLETO ({done[reg]}/{targets[reg]})"
+            status = "✓ COMPLETE" if done[reg] >= targets[reg] else f"INCOMPLETE ({done[reg]}/{targets[reg]})"
             print(f"  {reg}: {status}")
         
         if any(done[reg] > 0 and done[reg] < targets[reg] for reg in ['short', 'mid', 'long']):
-            print("\n! WARNING: Dataset parzialmente completo. Continuando la generazione...")
+            print("\n! WARNING: Dataset partially complete. Continuing generation...")
 
         if all(v == 0 for v in remaining.values()):
-            print("Dataset già completo!")
+            print("Already complete dataset!")
             return self._process_completed_multi_regime_dataset(
                 all_data, normalize, compute_stats_from
             )

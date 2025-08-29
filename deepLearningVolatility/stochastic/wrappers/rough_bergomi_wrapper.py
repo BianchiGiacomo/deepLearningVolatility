@@ -1,5 +1,5 @@
 """
-Wrapper per il modello Rough Bergomi.
+Wrapper for the Rough Bergomi model.
 """
 import torch
 from torch import Tensor
@@ -13,9 +13,9 @@ from deepLearningVolatility.stochastic.rough_bergomi import generate_rough_bergo
 
 class RoughBergomiProcess(BaseStochasticProcess):
     """
-    Wrapper per il modello Rough Bergomi.
+    Wrapper for the Rough Bergomi model.
     
-    Parametri theta:
+    Theta parameters:
         - H: Hurst parameter (0 < H < 0.5)
         - eta: Volatility of volatility
         - rho: Correlation
@@ -68,24 +68,24 @@ class RoughBergomiProcess(BaseStochasticProcess):
                  antithetic: bool = False,
                  **kwargs) -> SimulationOutput:
         """
-        Simula il processo Rough Bergomi.
+        Simulate the Rough Bergomi process.
         """
-        # Valida parametri
+        # Validate parameters
         is_valid, error_msg = self.validate_theta(theta)
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Estrai parametri
+        # Extract parameters
         H, eta, rho, xi0 = theta.tolist()
         
-        # Prepara stato iniziale
+        # Prepare initial state
         init_state = self.prepare_init_state(init_state)
         spot_init, var_init = init_state
         
-        # Parametri per la simulazione
-        alpha = H - 0.5  # Conversione per rough_bergomi
+        # Parameters for simulation
+        alpha = H - 0.5  # Conversion for rough_bergomi
         
-        # Gestisci antithetic se la funzione lo supporta
+        # Handle antithetic if the function supports it
         sim_kwargs = {
             'n_paths': n_paths,
             'n_steps': n_steps,
@@ -93,28 +93,28 @@ class RoughBergomiProcess(BaseStochasticProcess):
             'alpha': alpha,
             'rho': rho,
             'eta': eta,
-            'xi': var_init,  # xi iniziale = varianza iniziale
+            'xi': var_init,  # initial xi = initial variance
             'dt': dt,
             'device': device,
             'dtype': dtype
         }
         
-        # Aggiungi parametri opzionali se supportati
+        # Add optional parameters if supported
         import inspect
         sig = inspect.signature(generate_rough_bergomi)
         if 'antithetic' in sig.parameters:
             sim_kwargs['antithetic'] = antithetic
         
-        # Filtra kwargs extra supportati
+        # Filter extra supported kwargs
         for key, value in kwargs.items():
             if key in sig.parameters and key not in sim_kwargs:
                 sim_kwargs[key] = value
         
-        # Simula
+        # Simulate
         try:
             spot, variance = generate_rough_bergomi(**sim_kwargs)
             
-            # Crea output
+            # Create output
             auxiliary = {
                 'alpha': torch.tensor(alpha),
                 'H': torch.tensor(H)
@@ -134,14 +134,14 @@ class RoughBergomiProcess(BaseStochasticProcess):
                          dt: float,
                          threshold: float = 1e-10) -> Tuple[Tensor, Tensor]:
         """
-        Gestione specifica per Rough Bergomi.
-        Il modello può toccare zero a causa della roughness.
+        Specific handling for Rough Bergomi.
+        The model can reach zero due to roughness.
         """
-        # Usa l'implementazione di default che è già ottimizzata
+        # Use the default implementation which is already optimized
         return super().handle_absorption(paths, dt, threshold)
 
 
-# Registra il processo nel factory
+# Register the process in the factory
 ProcessFactory.register(
     'rough_bergomi', RoughBergomiProcess,
     aliases=['roughbergomi', 'rough-bergomi', 'rough_bergomi_process', 'roughbergomiprocess']

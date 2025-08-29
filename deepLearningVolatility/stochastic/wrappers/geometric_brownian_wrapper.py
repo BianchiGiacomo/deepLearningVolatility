@@ -1,5 +1,5 @@
 """
-Wrapper per il moto Browniano geometrico.
+Wrapper for the geometric Brownian motion.
 """
 import torch
 from torch import Tensor
@@ -12,9 +12,9 @@ from deepLearningVolatility.stochastic.brownian import generate_geometric_browni
 
 class GeometricBrownianProcess(BaseStochasticProcess):
     """
-    Wrapper per il moto Browniano geometrico (Black-Scholes).
+    Wrapper for geometric Brownian motion (Black-Scholes).
     
-    Parametri theta:
+    Theta parameters:
         - mu: Drift
         - sigma: Volatility
     """
@@ -43,7 +43,7 @@ class GeometricBrownianProcess(BaseStochasticProcess):
     
     @property
     def supports_absorption(self) -> bool:
-        return False  # GBM non tocca mai zero
+        return False  # GBM never touches zero
     
     @property
     def requires_variance_state(self) -> bool:
@@ -61,18 +61,18 @@ class GeometricBrownianProcess(BaseStochasticProcess):
                  **kwargs) -> SimulationOutput:
         """Simula il moto Browniano geometrico."""
         
-        # Valida parametri
+        # Validate parameters
         is_valid, error_msg = self.validate_theta(theta)
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Estrai parametri
+        # Extract parameters
         mu, sigma = theta.tolist()
         
-        # Prepara stato iniziale
+        # Prepare initial state
         init_state = self.prepare_init_state(init_state)
         
-        # Engine per random numbers
+        # Engine for random numbers
         if antithetic:
             from deepLearningVolatility.stochastic.random_helpers import randn_antithetic
             engine = lambda *size, dtype=None, device=None: randn_antithetic(
@@ -81,7 +81,7 @@ class GeometricBrownianProcess(BaseStochasticProcess):
         else:
             engine = torch.randn
         
-        # Simula
+        # Simulate
         try:
             paths = generate_geometric_brownian(
                 n_paths=n_paths,
@@ -92,7 +92,7 @@ class GeometricBrownianProcess(BaseStochasticProcess):
                 dt=dt,
                 dtype=dtype,
                 device=device,
-                engine=engine  # Passa l'engine
+                engine=engine  # Pass the engine
             )
             
             return SimulationOutput(
@@ -104,7 +104,7 @@ class GeometricBrownianProcess(BaseStochasticProcess):
             raise RuntimeError(f"Geometric Brownian simulation failed: {str(e)}") from e
 
 
-# Registra il processo
+# Register the process
 ProcessFactory.register(
      "geometric_brownian", GeometricBrownianProcess,
      aliases=["gbm", "geometric-brownian", "geometricbrownian",

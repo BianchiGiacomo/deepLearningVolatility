@@ -97,7 +97,7 @@ def generate_rough_bergomi(
         (alpha, rho, eta), dtype=dtype, device=device
     )
 
-    # Gestione antithetic
+    # Antithetic handling
     # Covariance matrix setup
     _dW1_cov1 = dt ** (alpha + 1) / (alpha + 1)
     _dW1_cov2 = dt ** (2 * alpha + 1) / (2 * alpha + 1)

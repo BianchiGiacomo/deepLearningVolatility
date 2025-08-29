@@ -12,15 +12,15 @@ from deepLearningVolatility.stochastic.vasicek import generate_vasicek
 
 class VasicekProcess(BaseStochasticProcess):
     """
-    Wrapper per il modello di Vasicek (mean-reverting process).
+    Wrapper for the Vasicek model (mean-reverting process).
     
-    Parametri theta:
+    Theta parameters:
         - kappa: Mean reversion speed
         - theta: Long-term mean
         - sigma: Volatility
     """
     
-    def __init__(self, spot: float = 0.04):  # Default al 4% per tasso
+    def __init__(self, spot: float = 0.04):  # Default to 4% for rate
         super().__init__(spot)
     
     @property
@@ -46,7 +46,7 @@ class VasicekProcess(BaseStochasticProcess):
     
     @property
     def supports_absorption(self) -> bool:
-        return False  # Vasicek può andare negativo, non tocca zero
+        return False  # Vasicek can go negative, does not touch zero
     
     @property
     def requires_variance_state(self) -> bool:
@@ -62,20 +62,20 @@ class VasicekProcess(BaseStochasticProcess):
                  dtype: Optional[torch.dtype] = None,
                  antithetic: bool = False,
                  **kwargs) -> SimulationOutput:
-        """Simula il processo di Vasicek."""
+        """Simulate the Vasicek process."""
         
-        # Valida parametri
+        # Validate parameters
         is_valid, error_msg = self.validate_theta(theta)
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Estrai parametri
+        # Extract parameters
         kappa, theta_param, sigma = theta.tolist()
         
-        # Prepara stato iniziale
+        # Prepare initial state
         init_state = self.prepare_init_state(init_state)
         
-        # Simula
+        # Simulate
         try:
             paths = generate_vasicek(
                 n_paths=n_paths,
@@ -91,7 +91,7 @@ class VasicekProcess(BaseStochasticProcess):
             )
             
             return SimulationOutput(
-                spot=paths,  # Per Vasicek, "spot" rappresenta il tasso
+                spot=paths,  # For Vasicek, "spot" represents the rate
                 variance=None
             )
             
@@ -99,7 +99,7 @@ class VasicekProcess(BaseStochasticProcess):
             raise RuntimeError(f"Vasicek simulation failed: {str(e)}") from e
 
 
-# Registra il processo
+# Register the process
 ProcessFactory.register(
     'vasicek', VasicekProcess,
     aliases=['vasicek_process', 'vasicekprocess']

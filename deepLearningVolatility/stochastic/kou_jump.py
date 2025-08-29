@@ -10,7 +10,7 @@ from torch import Tensor
 from deepLearningVolatility._utils.typing import TensorOrScalar
 
 from ._utils import cast_state
-from .random import randn_antithetic
+from .random_helpers import randn_antithetic
 
 def generate_kou_jump(
     n_paths: int,

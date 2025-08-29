@@ -1,5 +1,5 @@
 """
-Wrapper per il modello Kou Jump Diffusion.
+Wrapper for the Kou Jump Diffusion model.
 """
 import torch
 from torch import Tensor
@@ -13,9 +13,9 @@ from deepLearningVolatility.stochastic.kou_jump import generate_kou_jump
 
 class KouJumpProcess(BaseStochasticProcess):
     """
-    Wrapper per il modello Kou Jump Diffusion.
+    Wrapper for the Kou Jump Diffusion model.
     
-    Parametri theta:
+    Theta parameters:
         - sigma: Volatility
         - mu: Drift
         - jump_per_year: Average number of jumps per year
@@ -39,7 +39,7 @@ class KouJumpProcess(BaseStochasticProcess):
                 (0.05, 0.5),     # sigma
                 (-0.5, 0.5),     # mu
                 (0.0, 200.0),    # jump_per_year
-                (0.01, 0.5),     # jump_mean_up (deve essere < 1)
+                (0.01, 0.5),     # jump_mean_up (must be < 1)
                 (0.01, 0.5),     # jump_mean_down
                 (0.0, 1.0)       # jump_up_prob
             ],
@@ -56,11 +56,11 @@ class KouJumpProcess(BaseStochasticProcess):
     
     @property
     def supports_absorption(self) -> bool:
-        return True  # Kou può teoricamente toccare zero con down jumps estremi
+        return True  # Kou can theoretically reach zero with extreme down jumps
     
     @property
     def requires_variance_state(self) -> bool:
-        return False  # Solo stato del prezzo
+        return False  # Only price state
     
     def simulate(self,
                  theta: Tensor,
@@ -73,24 +73,24 @@ class KouJumpProcess(BaseStochasticProcess):
                  antithetic: bool = False,
                  **kwargs) -> SimulationOutput:
         """
-        Simula il processo Kou Jump Diffusion.
+        Simulate the Kou Jump Diffusion process.
         """
-        # Valida parametri
+        # Validate parameters
         is_valid, error_msg = self.validate_theta(theta)
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Estrai parametri
+        # Extract parameters
         sigma, mu, jump_per_year, jump_mean_up, jump_mean_down, jump_up_prob = theta.tolist()
         
-        # Validazione extra per Kou
+        # Extra validation for Kou
         if jump_mean_up >= 1.0:
             raise ValueError(f"jump_mean_up must be < 1.0, got {jump_mean_up}")
         
-        # Prepara stato iniziale
+        # Prepare initial state
         init_state = self.prepare_init_state(init_state)
         
-        # Simula
+        # Simulate
         try:
             spot_paths = generate_kou_jump(
                 n_paths=n_paths,
@@ -108,7 +108,7 @@ class KouJumpProcess(BaseStochasticProcess):
                 **kwargs  # engine, etc.
             )
             
-            # Kou ritorna solo spot paths
+            # Kou returns only spot paths
             return SimulationOutput(
                 spot=spot_paths,
                 variance=None,
@@ -122,7 +122,7 @@ class KouJumpProcess(BaseStochasticProcess):
             raise RuntimeError(f"Kou Jump simulation failed: {str(e)}") from e
 
 
-# Registra il processo
+# Register the process
 ProcessFactory.register(
     'kou_jump', KouJumpProcess,
     aliases=['kou', 'koujump', 'kou-jump', 'kou_jump_process', 'koujumpprocess']

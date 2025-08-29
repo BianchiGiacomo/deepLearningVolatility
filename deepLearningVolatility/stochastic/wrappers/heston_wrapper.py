@@ -1,5 +1,5 @@
 """
-Wrapper per il modello di Heston.
+Wrapper for the Heston model.
 """
 import torch
 from torch import Tensor
@@ -14,9 +14,9 @@ from deepLearningVolatility.stochastic.heston import generate_heston
 
 class HestonProcess(BaseStochasticProcess):
     """
-    Wrapper per il modello di Heston.
+    Wrapper for the Heston model.
     
-    Parametri theta:
+    Theta parameters:
         - kappa: Mean reversion speed
         - theta: Long-term variance
         - sigma: Volatility of variance
@@ -51,7 +51,7 @@ class HestonProcess(BaseStochasticProcess):
     
     @property
     def supports_absorption(self) -> bool:
-        return True  # Heston può toccare zero
+        return True  # Heston can reach zero
     
     @property
     def requires_variance_state(self) -> bool:
@@ -72,20 +72,20 @@ class HestonProcess(BaseStochasticProcess):
                  antithetic: bool = False,
                  **kwargs) -> SimulationOutput:
         """
-        Simula il processo di Heston.
+        Simulate the Heston process.
         """
-        # Valida parametri
+        # Validate parameters
         is_valid, error_msg = self.validate_theta(theta)
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Estrai parametri
+        # Extract parameters
         kappa, theta_param, sigma, rho = theta.tolist()
         
-        # Prepara stato iniziale
+        # Prepare initial state
         init_state = self.prepare_init_state(init_state)
         
-        # Simula
+        # Simulate
         try:
             spot_variance_tuple = generate_heston(
                 n_paths=n_paths,
@@ -100,7 +100,7 @@ class HestonProcess(BaseStochasticProcess):
                 device=device
             )
             
-            # generate_heston ritorna un namedtuple (spot, variance)
+            # generate_heston returns a namedtuple (spot, variance)
             return SimulationOutput(
                 spot=spot_variance_tuple.spot,
                 variance=spot_variance_tuple.variance,
@@ -111,7 +111,7 @@ class HestonProcess(BaseStochasticProcess):
             raise RuntimeError(f"Heston simulation failed: {str(e)}") from e
 
 
-# Registra il processo
+# Register the process
 ProcessFactory.register(
     'heston', HestonProcess,
     aliases=['heston_process', 'hestonprocess']

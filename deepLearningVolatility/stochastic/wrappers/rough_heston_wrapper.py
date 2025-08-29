@@ -1,5 +1,5 @@
 """
-Wrapper per il modello Rough Heston.
+Wrapper for the Rough Heston model.
 """
 import torch
 from torch import Tensor
@@ -13,19 +13,19 @@ from deepLearningVolatility.stochastic.rough_heston import generate_rough_heston
 
 class RoughHestonProcess(BaseStochasticProcess):
     """
-    Wrapper per il modello Rough Heston.
+    Wrapper for the Rough Heston model.
     
-    Parametri theta:
+    Theta parameters:
         - H: Hurst parameter (0 < H < 0.5)
-        - nu: Volatility of volatility (σ nel paper)
+        - nu: Volatility of volatility (σ in the paper)
         - rho: Correlation
-        - kappa: Mean reversion speed (λ nel paper)
+        - kappa: Mean reversion speed (λ in the paper)
         - theta_var: Long-term variance level
     """
     
     def __init__(self, spot: float = 1.0):
         super().__init__(spot)
-        self._supports_absorption = True  # Rough Heston può toccare zero!
+        self._supports_absorption = True  # Rough Heston can reach zero!
     
     @property
     def num_params(self) -> int:
@@ -75,21 +75,21 @@ class RoughHestonProcess(BaseStochasticProcess):
                  antithetic: bool = False,
                  **kwargs) -> SimulationOutput:
         """
-        Simula il processo Rough Heston.
+        Simulate the Rough Heston process.
         """
-        # Valida parametri
+        # Validate parameters
         is_valid, error_msg = self.validate_theta(theta)
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Estrai parametri
+        # Extract parameters
         H, nu, rho, kappa, theta_var = theta.tolist()
         
-        # Prepara stato iniziale
+        # Prepare initial state
         init_state = self.prepare_init_state(init_state)
         spot_init, var_init = init_state
         
-        # Parametri per la simulazione
+        # Parameters for simulation
         sim_kwargs = {
             'n_paths': n_paths,
             'n_steps': n_steps,
@@ -104,25 +104,25 @@ class RoughHestonProcess(BaseStochasticProcess):
             'dtype': dtype
         }
         
-        # Aggiungi parametri opzionali se supportati
+        # Add optional parameters if supported
         import inspect
         sig = inspect.signature(generate_rough_heston)
         if 'antithetic' in sig.parameters:
             sim_kwargs['antithetic'] = antithetic
         
-        # Filtra kwargs extra supportati
+        # Filter extra supported kwargs
         for key, value in kwargs.items():
             if key in sig.parameters and key not in sim_kwargs:
                 sim_kwargs[key] = value
         
-        # Simula
+        # Simulate
         try:
             spot_variance_tuple = generate_rough_heston(**sim_kwargs)
             
-            # Crea output
+            # Create output
             auxiliary = {
                 'H': torch.tensor(H),
-                'roughness': torch.tensor(H),  # Alias per consistenza
+                'roughness': torch.tensor(H),
                 'mean_reversion': torch.tensor(kappa),
                 'long_term_var': torch.tensor(theta_var)
             }
@@ -141,21 +141,21 @@ class RoughHestonProcess(BaseStochasticProcess):
                          dt: float,
                          threshold: float = 1e-10) -> Tuple[Tensor, Tensor]:
         """
-        Gestione specifica per Rough Heston.
-        Il modello può toccare zero sia per la roughness che per la natura di Heston.
+        Specific handling for Rough Heston.
+        The model can reach zero both due to roughness and the Heston nature.
         
-        Per Rough Heston con H molto piccolo, potrebbe essere necessario
-        gestire threshold adattive.
+        For Rough Heston with very small H, it may be necessary
+        to handle adaptive thresholds.
         """
-        # Possibile ottimizzazione: threshold adattiva basata su H
+        # Possible optimization: adaptive threshold based on H
         if hasattr(self, '_last_H') and self._last_H < 0.1:
             threshold = max(threshold, 1e-8)
         
-        # Usa l'implementazione di default che è già ottimizzata
+        # Use the default implementation which is already optimized
         return super().handle_absorption(paths, dt, threshold)
 
 
-# Registra il processo nel factory
+# Register the process in the factory
 ProcessFactory.register(
     "rough_heston",
     RoughHestonProcess,

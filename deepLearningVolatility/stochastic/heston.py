@@ -10,7 +10,7 @@ from deepLearningVolatility._utils.typing import TensorOrScalar
 
 from ._utils import cast_state
 from .cir import generate_cir
-from .random import randn_antithetic
+from .random_helpers import randn_antithetic
 
 
 class SpotVarianceTuple(namedtuple("SpotVarianceTuple", ["spot", "variance"])):
