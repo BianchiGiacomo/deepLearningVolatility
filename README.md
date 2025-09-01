@@ -70,11 +70,6 @@ Parameters and thresholds can be tweaked directly inside the scripts.
 ## Documentation & Results Analysis
 
 Comprehensive documentation for **using the framework and analyzing results** lives in the `docs/` directory.
-Start here:
-- `docs/index.md` — overview and navigation.
-- `docs/results/long_term_absorption.md` — how we handle long‑term absorption and how to reproduce the figures.
-- `docs/monte_carlo/discretization.md` — Monte Carlo settings, time discretization choices, and stability tips.
-- `docs/howto/reproduce_figures.md` — step‑by‑step guide to regenerate images in `images/`.
 
 For quick, runnable demonstrations that generate plots/tables, use the scripts in `examples/` (e.g. `MonteCarloDebugger_time_discretization.py`).
 
