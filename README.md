@@ -53,15 +53,20 @@ pip install -e .
 
 ## Quickstart
 
-You can run the ready‑to‑use scripts in the `examples/` folder. For instance:
+You can run the ready-to-use scripts in the `examples/` folder to explore the framework:
 
 ```bash
-# Long‑term absorption analysis (1Y–5Y) and smile comparison at T=5Y
+# Analyze temporal discretization optimization across regimes
+python examples/MonteCarloDebugger_time_discretization.py
+
+# Long-term absorption analysis (1Y–5Y) with smile comparison
 python examples/LongTermRegimeAnalyzer.py
 
-# Monte Carlo debugger for short maturities
-python examples/MonteCarloDebugger_short_maturities.py
-```
+# Test trained pointwise network performance
+python examples/pointwise_test_local.py
+
+# Test trained multi-regime network performance  
+python examples/multiregime_test_local.py
 
 Parameters and thresholds can be tweaked directly inside the scripts.
 
