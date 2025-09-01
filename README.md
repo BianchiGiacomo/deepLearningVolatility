@@ -23,6 +23,15 @@ Monte Carlo engines for rough/classical models, and post‑processing tools (sur
 
 ---
 
+## Results: Pointwise Network Performance
+
+<img src="images/pointwise_case2_comparison.png" width="800">
+
+**Process**: Rough Bergomi model ($H=0.25$, $\eta=2.00$, $\rho=-0.80$, $\xi_0=0.15$) trained on 7,000 random grid surfaces. Neural network predictions (red dashed) vs Monte Carlo reference (blue solid) with 95% confidence intervals.  
+**Performance**: MAE = 0.00078, CI Coverage = 89.5%
+
+---
+
 ## Requirements
 
 - Python **>= 3.8.1**
@@ -136,7 +145,7 @@ Bianchi, G. (2025). *Deep Learning Volatility* (v1.0.0) [Software]. https://doi.
   doi     = {10.5281/zenodo.17018686},
   url     = {https://github.com/BianchiGiacomo/deepLearningVolatility}
 }
-
+```
 ---
 
 ## License
