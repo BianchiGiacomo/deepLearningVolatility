@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+title: Deep Learning Volatility
+message: If you use this software, please cite it as below.
+type: software
+authors:
+  - family-names: Bianchi
+    given-names: Giacomo
+repository-code: https://github.com/BianchiGiacomo/deepLearningVolatility
+license: MIT
+version: 1.0.0
+doi: 10.5281/zenodo.17018686
+date-released: 2025-09-01
+keywords:
+  - option pricing
+  - implied volatility surface
+  - stochastic volatility
+  - rough heston
+  - rough bergomi
+  - neural pricer
+  - calibration
+  - monte carlo
+  - quantitative finance
