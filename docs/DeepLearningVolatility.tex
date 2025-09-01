@@ -1217,23 +1217,22 @@
 	The multi-regime evaluation demonstrates the framework's ability to achieve robust performance with compact training datasets. The networks were trained using a lean data generation approach:
 	
 	\begin{itemize}[nosep]
-		\item \textbf{Training data}: 1{,}500 volatility surfaces per regime (4{,}500 total), each generated with 50{,}000 Monte Carlo paths
-		\item \textbf{Validation data}: 300 surfaces per regime (900 total), each with 50{,}000 paths
+		\item \textbf{Training data}: 3{,}000 volatility surfaces per regime (9{,}000 total), each generated with 50{,}000 Monte Carlo paths
+		\item \textbf{Validation data}: 500 surfaces per regime (1{,}500 total), each with 50{,}000 paths
 		\item \textbf{Computational cost (with MC path reuse per regime)}: 
 		one simulation \emph{per regime per surface} 
-		$\Rightarrow 1{,}500 \times 3 = 4{,}500$ (training) $+$ 
-		$300 \times 3 = 900$ (validation) 
-		$= \mathbf{5{,}400}$ simulations total. 
-		Paths are reused across maturities within each regime; distinct time steps $dt$ prevent reuse across regimes.
+		$\Rightarrow 3{,}000 \times 3 = 9{,}000$ (training) $+$ 
+		$500 \times 3 = 1{,}500$ (validation) 
+		$= \mathbf{10{,}500}$ simulations total. 
+		Paths are reused across maturities within each regime; distinct time steps $\Delta t$ prevent reuse across regimes.
 	\end{itemize}
-	
 	
 	This compact dataset size—significantly smaller than typical deep learning applications—highlights the efficiency of the multi-regime approach. The specialized nature of each regime allows effective learning from limited data while maintaining the high-fidelity Monte Carlo paths necessary for rough volatility model accuracy.
 	
 	\paragraph{Regime-Specific Discretization}
 	Each regime employs the optimized discretization parameters derived from the temporal analysis:
 	\begin{itemize}[nosep]
-		\item \textbf{Short regime} ($T \leq 30$ days): $\Delta t = 3 \times 10^{-5}$
+		\item \textbf{Short regime} ($T \leq 30$ days): $\Delta t = 3.00 \times 10^{-5}$
 		\item \textbf{Mid regime} (30 days $< T < 1$ year): $\Delta t = 6.85 \times 10^{-4}$
 		\item \textbf{Long regime} ($T \geq 1$ year): $\Delta t = 2.74 \times 10^{-3}$
 	\end{itemize}
@@ -1246,19 +1245,19 @@
 	
 	\paragraph{Short-Term Regime Performance}
 	
-	Figure~\ref{fig:multiregime-short} demonstrates the multi-regime network's performance for short maturities ranging from 1 week to 1 month:
+	Figure~\ref{fig:multiregime-short} demonstrates the multi-regime network's performance for short maturities ranging from 7 days to 1 month:
 	
 	\begin{figure}[ht]
 		\centering
 		\includegraphics[width=\textwidth]{../images/smile_comparison_short_regime.png}
-		\caption{Multi-regime network performance for short-term rough Heston dynamics. The specialized short-term network achieves MAE values between 0.0012-0.0032 across maturities from 7 days to 1 month, with confidence interval coverage varying from 63-90\% across different strikes and maturities.}
+		\caption{Multi-regime network performance for short-term rough Heston dynamics. The specialized short-term network achieves MAE of 0.00363 with confidence interval coverage of 65.9\% across maturities from 7 days to 1 month.}
 		\label{fig:multiregime-short}
 	\end{figure}
 	
 	The short-term regime exhibits the most challenging dynamics due to the extreme behavior of rough processes at short time scales. Despite this complexity, the specialized network achieves:
 	
 	\begin{itemize}[nosep]
-		\item \textbf{Low prediction errors}: Mean Absolute Error of 0.00376 across the entire short-term surface
+		\item \textbf{Low prediction errors}: Mean Absolute Error of 0.00363 across the entire short-term surface
 		\item \textbf{Consistent accuracy}: Neural predictions remain close to Monte Carlo means despite high volatility in short-term dynamics
 		\item \textbf{Proper scaling}: The network correctly captures the magnitude and variation of implied volatilities in this regime (mean IV ≈ 0.22)
 	\end{itemize}
@@ -1270,18 +1269,18 @@
 	\begin{figure}[ht]
 		\centering
 		\includegraphics[width=\textwidth]{../images/smile_comparison_mid_regime.png}
-		\caption{Multi-regime network performance for mid-term rough Heston dynamics. The mid-term specialized network demonstrates superior accuracy with MAE values between 0.0017-0.0045 and improved confidence interval coverage of 59-91\% across the tested maturity range.}
+		\caption{Multi-regime network performance for mid-term rough Heston dynamics. The mid-term specialized network demonstrates superior accuracy with MAE of 0.00231 and improved confidence interval coverage of 74.5\% across the tested maturity range.}
 		\label{fig:multiregime-mid}
 	\end{figure}
 	
 	The mid-term regime shows improved performance characteristics:
 	
 	\begin{itemize}[nosep]
-		\item \textbf{Enhanced accuracy}: MAE of 0.00216, representing nearly 50\% improvement over short-term performance
+		\item \textbf{Enhanced accuracy}: MAE of 0.00231, representing approximately 36\% improvement over short-term performance
 		\item \textbf{Better statistical consistency}: 74.5\% confidence interval coverage indicates strong alignment with Monte Carlo uncertainty bounds
 		\item \textbf{Smooth smile evolution}: The network accurately reproduces the gradual flattening of volatility smiles with increasing maturity
 	\end{itemize}
-			
+	
 	\paragraph{Long-Term Regime Performance}
 	
 	Figure~\ref{fig:multiregime-long} illustrates performance for long maturities from 1 to 5 years:
@@ -1289,35 +1288,35 @@
 	\begin{figure}[ht]
 		\centering
 		\includegraphics[width=\textwidth]{../images/smile_comparison_long_regime.png}
-		\caption{Multi-regime network performance for long-term rough Heston dynamics. The long-term network achieves the highest accuracy with MAE values between 0.0016-0.0027 and demonstrates excellent shape preservation across the 1-5 year maturity range.}
+		\caption{Multi-regime network performance for long-term rough Heston dynamics. The long-term network achieves the highest accuracy with MAE of 0.00169 and demonstrates excellent shape preservation with 77.3\% confidence interval coverage across the 1-5 year maturity range.}
 		\label{fig:multiregime-long}
 	\end{figure}
 	
 	The long-term regime demonstrates the strongest performance metrics:
 	
 	\begin{itemize}[nosep]
-		\item \textbf{Highest accuracy}: MAE of 0.00196, the lowest across all three regimes
+		\item \textbf{Highest accuracy}: MAE of 0.00169, the lowest across all three regimes
 		\item \textbf{Computational efficiency}: Leveraging the coarser discretization while maintaining high precision
 		\item \textbf{Stable dynamics}: The smoothing effect of rough processes over long time horizons enables more reliable neural approximation
 	\end{itemize}
-						
-%	\subsection{Quantitative Performance Summary}
-%	
-%	The comprehensive evaluation yields the following performance statistics across regimes:
-%	
-%	\begin{center}
-%		\begin{tabular}{@{}lcccc@{}}
-%			\toprule
-%			\textbf{Regime} & \textbf{MAE} & \textbf{CI Coverage} & \textbf{CI Width} & \textbf{Mean IV} \\
-%			\midrule
-%			Short (≤30 days) & 0.00376 & 56.8\% & 0.0085 & 0.215 \\
-%			Mid (30d - 1y) & 0.00216 & 74.5\% & 0.0069 & 0.188 \\
-%			Long (≥1 year) & 0.00196 & 65.9\% & 0.0055 & 0.156 \\
-%			\midrule
-%			\textbf{Overall} & \textbf{0.00263} & \textbf{65.7\%} & \textbf{0.0070} & \textbf{0.186} \\
-%			\bottomrule
-%		\end{tabular}
-%	\end{center}
+	
+	\subsection{Quantitative Performance Summary}
+	
+	The comprehensive evaluation yields the following performance statistics across regimes:
+	
+	\begin{center}
+		\begin{tabular}{@{}lcccc@{}}
+			\toprule
+			\textbf{Regime} & \textbf{MAE} & \textbf{CI Coverage} & \textbf{CI Width} & \textbf{Mean IV} \\
+			\midrule
+			Short (≤30 days) & 0.00363 & 65.9\% & 0.0086 & 0.2153 \\
+			Mid (30d - 1y) & 0.00231 & 74.5\% & 0.0083 & 0.1885 \\
+			Long (≥1 year) & 0.00169 & 77.3\% & 0.0051 & 0.1564 \\
+			\midrule
+			\textbf{Overall} & \textbf{0.00254} & \textbf{72.6\%} & \textbf{0.0073} & \textbf{0.1867} \\
+			\bottomrule
+		\end{tabular}
+	\end{center}
 	
 	\subsection{Multi-Regime Architecture Benefits}
 	
@@ -1328,6 +1327,9 @@
 	
 	\paragraph{Robust Performance Across Time Scales}
 	The framework maintains consistent accuracy across the full spectrum of option maturities, from weekly options to 5-year contracts, addressing the full range of market-traded instruments.
+	
+	\paragraph{Progressive Accuracy Improvement}
+	The results demonstrate a clear pattern where accuracy improves with longer maturities (Short: 0.00363 → Mid: 0.00231 → Long: 0.00169 MAE), reflecting the natural smoothing of rough volatility processes over extended time horizons.
 	
 	The multi-regime approach successfully addresses the fundamental challenge of rough volatility modeling: the widely varying dynamics across different time scales. By employing specialized networks trained with regime-appropriate data and discretization, the framework achieves robust performance across the entire maturity spectrum while maintaining computational efficiency suitable for real-time applications.
 						

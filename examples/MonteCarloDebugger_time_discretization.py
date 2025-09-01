@@ -531,11 +531,11 @@ def test_mid_regime():
     
     # MID maturities (1-6 months)
     mid_maturities = torch.tensor([
-        30/365,   # 1 month
-        60/365,   # 2 months
-        90/365,   # 3 months
-        120/365,  # 4 months
-        180/365   # 6 months
+        60/365,
+        90/365,
+        120/365,
+        180/365,
+        270/365
     ])
     
     # Log-moneyness
