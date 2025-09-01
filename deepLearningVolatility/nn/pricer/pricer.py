@@ -1390,163 +1390,186 @@ class PointwiseNetworkPricer(NeuralSurfacePricer):
                     chunk_size: int = None,
                     q: float = 0.0) -> torch.Tensor:
         """
-        Calculate IV on grid via Monte Carlo.
+        Calculate IV on grid via Monte Carlo with regime-based simulation reuse.
         """
         # Validate parameters
         is_valid, error_msg = self.process.validate_theta(theta)
         if not is_valid:
             raise ValueError(f"Invalid parameters: {error_msg}")
         
-        # Determines chunk_size if not specified
         if chunk_size is None:
-            chunk_size = 10000 if self.device.type == 'cuda' else 20000
+            chunk_size = 50000 if self.device.type == 'cuda' else 20000
+        
+        # Define dt regimes
+        dt_regimes = {
+            'short': (0, 30/365, 3e-5),           # T ≤ 30 days
+            'mid': (30/365, 360/365, 1/1460),     # 30 < T ≤ 360 days
+            'long': (360/365, float('inf'), 1/365) # T > 360 days
+        }
+        
+        # Group maturities by regime
+        regime_maturities = {regime: [] for regime in dt_regimes.keys()}
+        for i, T in enumerate(maturities):
+            T_val = T.item()
+            for regime, (t_min, t_max, _) in dt_regimes.items():
+                if t_min < T_val <= t_max:
+                    regime_maturities[regime].append((i, T))
+                    break
         
         # Initialize results grid
         iv = torch.zeros(len(maturities), len(logK), device=self.device)
         
-        # Process each deadline separately
-        for iT, T in enumerate(maturities):
-            T_val = T.item()
-            disc = math.exp(-self.r * T_val)
-            # Forward for this maturity
-            F_val = spot * math.exp((self.r - q) * T_val)
+        # Process each regime with a single simulation
+        for regime, mat_list in regime_maturities.items():
+            if not mat_list:
+                continue
             
-            # Determine dt for this deadline
-            if adaptive_dt:
-                if T_val <= 30/365:
-                    dt_use = 3e-5
-                elif T_val < 1.0:
-                    dt_use = 1/1460
-                else:
-                    dt_use = 1/365
-            else:
-                dt_use = self.dt
+            _, _, dt_regime = dt_regimes[regime]
             
-            n_steps = max(2, int(math.ceil(T_val / dt_use)))
+            # Find max maturity in this regime for simulation
+            max_T_regime = max(T.item() for _, T in mat_list)
+            n_steps = max(2, int(np.ceil(max_T_regime / dt_regime)))
             
-            # Accumulate statistics for each strike
-            strike_stats = {jK: {'payoff_sum': 0.0, 'dS_sum': 0.0, 'payoff_dS_sum': 0.0,
-                                'payoff_sq_sum': 0.0, 'dS_sq_sum': 0.0, 
-                                'n_processed': 0, 'n_valid': 0}
-                           for jK in range(len(logK))}
+            # Initialize statistics for all maturities in this regime
+            regime_stats = {}
+            for idx, T in mat_list:
+                T_val = T.item()
+                regime_stats[idx] = {
+                    'T': T_val,
+                    'time_idx': min(int(np.round(T_val / dt_regime)), n_steps - 1),
+                    'disc': math.exp(-self.r * T_val),
+                    'F': spot * math.exp((self.r - q) * T_val),
+                    'strike_stats': {jK: {'payoff_sum': 0.0, 'dS_sum': 0.0, 
+                                         'payoff_dS_sum': 0.0, 'dS_sq_sum': 0.0,
+                                         'n_valid': 0} 
+                                   for jK in range(len(logK))}
+                }
             
-            # Process in chunks
+            # Process simulation in chunks
             n_chunks = (n_paths + chunk_size - 1) // chunk_size
+            total_paths_processed = 0
             
             for chunk_idx in range(n_chunks):
                 current_chunk_size = min(chunk_size, n_paths - chunk_idx * chunk_size)
                 
+                # Single simulation for all maturities in this regime
                 sim_result = self.process.simulate(
                     theta=theta,
                     n_paths=current_chunk_size,
                     n_steps=n_steps,
-                    dt=dt_use,
+                    dt=dt_regime,
                     init_state=(spot,) if not self.process.requires_variance_state else None,
                     device=self.device,
                     antithetic=use_antithetic
                 )
                 
-                S_chunk = sim_result.spot
-                ST_chunk = S_chunk[:, -1]
+                S_paths = sim_result.spot
                 
-                # Manage absorption
-                if self.process.supports_absorption:
-                    valid_mask = ST_chunk > 0
-                else:
-                    valid_mask = torch.ones_like(ST_chunk, dtype=torch.bool)
-                
-                n_valid_chunk = valid_mask.sum().item()
-                
-                # Accumulate statistics for each strike
-                for jK, k in enumerate(logK):
-                    # Strike relative to the forward: K = F * exp(k)
-                    K = F_val * math.exp(k.item())
+                # Process each maturity in this regime using the same paths
+                for idx, T in mat_list:
+                    stats = regime_stats[idx]
+                    time_idx = stats['time_idx']
+                    F_val = stats['F']
                     
-                    if n_valid_chunk > 0:
-                        ST_valid = ST_chunk[valid_mask]
-                        payoff_valid = (ST_valid - K).clamp(min=0.0)
-                        dS_valid = ST_valid - spot
-                        
-                        stats = strike_stats[jK]
-                        stats['payoff_sum'] += payoff_valid.sum().item()
-                        stats['dS_sum'] += dS_valid.sum().item()
-                        
-                        if control_variate:
-                            stats['payoff_dS_sum'] += (payoff_valid * dS_valid).sum().item()
-                            stats['payoff_sq_sum'] += (payoff_valid ** 2).sum().item()
-                            stats['dS_sq_sum'] += (dS_valid ** 2).sum().item()
-                        
-                        stats['n_valid'] += n_valid_chunk
+                    # Extract ST at this time
+                    ST = S_paths[:, time_idx]
                     
-                    stats['n_processed'] += current_chunk_size
+                    # Handle absorption if supported
+                    if self.process.supports_absorption:
+                        S_up_to_T = S_paths[:, :time_idx+1]
+                        _, absorbed_mask = self.process.handle_absorption(S_up_to_T, dt_regime)
+                        survived_mask = ~absorbed_mask
+                        ST_valid = ST[survived_mask]
+                        n_valid = survived_mask.sum().item()
+                    else:
+                        ST_valid = ST
+                        n_valid = current_chunk_size
+                    
+                    if n_valid > 0:
+                        # Calculate statistics for all strikes
+                        for jK, k in enumerate(logK):
+                            K = F_val * math.exp(k.item())
+                            
+                            payoff = (ST_valid - K).clamp(min=0.0)
+                            dS = ST_valid - spot
+                            
+                            strike_stats = stats['strike_stats'][jK]
+                            strike_stats['payoff_sum'] += payoff.sum().item()
+                            strike_stats['dS_sum'] += dS.sum().item()
+                            
+                            if control_variate:
+                                strike_stats['payoff_dS_sum'] += (payoff * dS).sum().item()
+                                strike_stats['dS_sq_sum'] += (dS ** 2).sum().item()
+                            
+                            strike_stats['n_valid'] += n_valid
+                
+                total_paths_processed += current_chunk_size
                 
                 # Free memory
-                del S_chunk, ST_chunk
+                del S_paths, sim_result
                 if self.device.type == 'cuda':
                     torch.cuda.empty_cache()
             
-            # Calculate IV for each strike
-            for jK, k in enumerate(logK):
-                stats = strike_stats[jK]
-                n_total = stats['n_processed']
-                n_valid = stats['n_valid']
+            # Calculate IVs for all (T, K) pairs in this regime
+            for idx, T in mat_list:
+                stats = regime_stats[idx]
+                T_val = stats['T']
+                disc = stats['disc']
+                F_val = stats['F']
                 
-                if n_total == 0 or n_valid == 0:
-                    iv[iT, jK] = self._get_default_volatility(theta)
-                    continue
-                
-                payoff_mean = stats['payoff_sum'] / n_total
-                
-                # Control variate
-                if control_variate and n_total > 1:
-                    dS_mean = stats['dS_sum'] / n_total
-                    payoff_dS_mean = stats['payoff_dS_sum'] / n_total
-                    dS_var = (stats['dS_sq_sum'] / n_total) - dS_mean**2
+                for jK, k in enumerate(logK):
+                    K = F_val * math.exp(k.item())
+                    strike_stats = stats['strike_stats'][jK]
+                    n_valid = strike_stats['n_valid']
                     
-                    if dS_var > 1e-10:
-                        cov = payoff_dS_mean - payoff_mean * dS_mean
-                        beta = cov / dS_var
-                        price_call = (payoff_mean - beta * dS_mean) * disc
+                    if n_valid == 0:
+                        iv[idx, jK] = self._get_default_volatility(theta)
+                        continue
+                    
+                    # Calculate price with control variate
+                    payoff_mean = strike_stats['payoff_sum'] / total_paths_processed
+                    
+                    if control_variate and n_valid > 1:
+                        dS_mean = strike_stats['dS_sum'] / total_paths_processed
+                        payoff_dS_mean = strike_stats['payoff_dS_sum'] / total_paths_processed
+                        dS_var = (strike_stats['dS_sq_sum'] / total_paths_processed) - dS_mean**2
+                        
+                        if dS_var > 1e-10:
+                            cov = payoff_dS_mean - payoff_mean * dS_mean
+                            beta = cov / dS_var
+                            price_call = (payoff_mean - beta * dS_mean) * disc
+                        else:
+                            price_call = payoff_mean * disc
                     else:
                         price_call = payoff_mean * disc
-                else:
-                    price_call = payoff_mean * disc
-                
-                # Ensure price above the intrinsic (PV di (F-K)^+)
-                K = F_val * math.exp(k.item())
-                intrinsic_value = disc * max(0.0, F_val - K)
-                price_call = max(price_call, intrinsic_value + price_floor)
-                
-                # Warning if many paths absorbed
-                if self.process.supports_absorption:
-                    absorption_ratio = 1.0 - (n_valid / n_total)
-                    if absorption_ratio > 0.2:
-                        print(f"Warning: {absorption_ratio:.1%} paths absorbed at T={T_val:.3f}, K={K:.3f}")
-                
-                # Calculate IV
-                if price_call > 1e-10:
-                    try:
-                        bs = BlackScholes(
-                            EuropeanOption(
-                                BrownianStock(),
-                                strike=float(K),
-                                maturity=float(T)
+                    
+                    # Ensure price above intrinsic value
+                    intrinsic_value = disc * max(0.0, F_val - K)
+                    price_call = max(price_call, intrinsic_value + price_floor)
+                    
+                    # Calculate IV
+                    if price_call > 1e-10:
+                        try:
+                            bs = BlackScholes(
+                                EuropeanOption(
+                                    BrownianStock(),
+                                    strike=float(K),
+                                    maturity=float(T_val)
+                                )
                             )
-                        )
-                        iv[iT, jK] = bs.implied_volatility(
-                            log_moneyness=float(-k),
-                            time_to_maturity=float(T),
-                            price=price_call
-                        )
-                    except:
-                        iv[iT, jK] = self._get_default_volatility(theta)
-                else:
-                    iv[iT, jK] = self._get_default_volatility(theta)
+                            iv[idx, jK] = bs.implied_volatility(
+                                log_moneyness=float(-k),
+                                time_to_maturity=float(T_val),
+                                price=price_call
+                            )
+                        except:
+                            iv[idx, jK] = self._get_default_volatility(theta)
+                    else:
+                        iv[idx, jK] = self._get_default_volatility(theta)
         
-        # Smile repair
+        # Apply smile repair if enabled
         if self.enable_smile_repair:
             fallback_vol = self._get_default_volatility(theta)
-            
             iv_repaired, repair_stats = SmileRepair.repair_surface(
                 iv, 
                 logK,
