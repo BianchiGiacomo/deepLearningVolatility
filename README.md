@@ -67,6 +67,7 @@ python examples/pointwise_test_local.py
 
 # Test trained multi-regime network performance  
 python examples/multiregime_test_local.py
+```
 
 Parameters and thresholds can be tweaked directly inside the scripts.
 
