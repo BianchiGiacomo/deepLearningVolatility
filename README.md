@@ -80,11 +80,11 @@ python examples/multiregime_test_local.py
 
 Parameters and thresholds can be tweaked directly inside the scripts.
 
-# Run on Google Colab
+### Run on Google Colab
 
 The folder examples/GoogleColab/ contains Jupyter notebooks to generate training datasets and to train neural pricers using free GPUs on Google Colab.
 
-# Notebooks
+### Notebooks
 
 dlvol_MultiRegimeGridPricer.ipynb [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/BianchiGiacomo/deepLearningVolatility/blob/main/examples/GoogleColab/dlvol_MultiRegimeGridPricer.ipynb)
 dlvol_PointwisePricer.ipynb [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/BianchiGiacomo/deepLearningVolatility/blob/main/examples/GoogleColab/dlvol_PointwisePricer.ipynb)
