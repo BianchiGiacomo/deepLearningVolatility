@@ -94,7 +94,7 @@
 		\item specifies the stochastic-process interface used by all models (Chapter~\ref{ch:stoch_interface}),
 		\item details the dataset generation via Monte Carlo on \emph{random grids/smiles} (\cref{ch:data}),
 		\item describes the neural pricers (grid, pointwise, multi-regime) and interpolation/repair modules (\cref{ch:neural_pricers}), and
-		\item outlines calibration workflows and reproducibility (\cref{ch:calib}).
+		\item sketches the planned calibration framework and future development roadmap (\cref{ch:calib}).
 	\end{itemize}
 	
 	\paragraph{Intended audience.} Quantitative finance students, quant researchers and engineers extending DLV to new models, building datasets, or integrating calibration into production.
@@ -1038,6 +1038,56 @@
 	\chapter{Calibration Workflows}
 	\label{ch:calib}
 	
+	This chapter outlines the planned calibration framework for DLV. 
+	Calibration is not yet implemented, but represents the next major milestone
+	to evolve the framework from a neural pricing research tool into a 
+	complete model calibration system.
+	
+	\section{Two-Stage Approach}
+	
+	DLV follows a two-stage calibration methodology:
+	
+	\paragraph{Stage 1: Offline Neural Training (Implemented).}
+	Neural networks are trained on synthetic datasets generated via Monte Carlo
+	simulation across the parameter space. This produces fast surrogate pricers
+	that replicate expensive stochastic model evaluations with high accuracy.
+	
+	\paragraph{Stage 2: Online Market Calibration (Planned).}
+	In the future, trained neural pricers will replace Monte Carlo simulations
+	inside optimization loops, enabling real-time calibration against market data
+	by minimizing distance metrics between observed and predicted volatility surfaces.
+	
+	\section{Planned Roadmap}
+	
+	The calibration framework will be developed in phases:
+	
+	\begin{itemize}[nosep]
+		\item \textbf{Phase 1: Basic Engine} – market data ingestion, simple objective functions, gradient-based optimization.
+		\item \textbf{Phase 2: Extended Features} – multiple optimizers, joint calibration with variance swaps, parameter uncertainty analysis.
+		\item \textbf{Phase 3: Production Integration} – real-time calibration pipelines, data provider interfaces, risk management tools.
+	\end{itemize}
+	
+	\section{Current Status}
+	
+	At present, DLV provides:
+	
+	\begin{itemize}[nosep]
+		\item complete infrastructure for neural pricer training,
+		\item high-performance surrogate models for option pricing,
+		\item standardized interfaces designed for future calibration integration.
+	\end{itemize}
+	
+	Basic calibration can already be attempted manually by combining trained neural pricers
+	with external optimization libraries, though a dedicated calibration engine is still under development.
+	
+	\section{Outlook}
+	
+	Calibration remains the critical next step. Its implementation will leverage the modular
+	design of DLV, ensure compatibility across stochastic processes, and provide validation
+	against synthetic benchmarks. This development path is detailed in 
+	Chapter~\ref{ch:future-development}.
+	
+	
 	\chapter{Experiments and Figures}
 	\section{Temporal Discretization Optimization for Multi-Regime Training}
 	\label{sec:discretization-optimization}
@@ -1450,6 +1500,32 @@
 			\bottomrule
 		\end{tabular}
 	\end{center}
+	
+	\chapter{Future Development and Contribution Opportunities}
+	\label{ch:future-development}
+	
+	This chapter highlights the main directions for extending the DLV framework, organized by implementation priority and development timeline.
+	
+	\section{Priority 1: Calibration Framework}
+	
+	The first development milestone is the implementation of a complete calibration workflow.
+	This includes handling real market data, defining flexible objective functions (price-based, implied volatility-based, vega-weighted), and validating the robustness of parameter recovery through synthetic benchmarking studies.
+	
+	\section{Priority 2: Forward Variance Calibration}
+	
+	Building on recent research \citep{Baschetti2024DeepCalibrationRandomGrids}, the next step is extending calibration to the forward variance curve $\xi(t)$, potentially integrating variance swap market data. This would enable market-consistent estimation of rough volatility parameters and more realistic long-term volatility modeling.
+	
+	\section{Priority 3: FFT-Based Pricing}
+	
+	FFT methods (e.g., Carr–Madan) should be introduced for models with known characteristic functions. This will provide analytical benchmarks for neural network validation, accelerate training data generation for compatible models, and complement the Monte Carlo engine with exact pricing capabilities.
+	
+	\section{Priority 4: Extended Applications}
+	
+	Trained neural pricers can then be leveraged for broader applications, such as exotic option pricing (American, barrier, Asian options), portfolio-level risk analysis, and real-time Greeks computation via automatic differentiation.
+	
+	\section{Contribution Guidelines}
+	
+	Contributors are encouraged to follow the modular architecture of the project, ensure compatibility with existing interfaces, and provide comprehensive documentation and benchmarks. Development efforts should prioritize the calibration framework as the most impactful short-term enhancement to transform DLV into a production-ready tool.
 	
 	\printbibliography
 \end{document}
