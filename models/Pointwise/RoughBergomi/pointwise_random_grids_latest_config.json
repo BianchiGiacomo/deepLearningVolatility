@@ -1,0 +1,42 @@
+{
+  "model_name": "roughbergomiprocess_pointwise_random_grids_20250827_174636",
+  "process_name": "RoughBergomiProcess",
+  "process_key": "rough_bergomi",
+  "network_architecture": "4+2 \u2192 [30, 30, 30, 30] \u2192 1",
+  "training_config": {
+    "process": "rough_bergomi",
+    "device": "cuda",
+    "train_surfaces": 7000,
+    "train_maturities": 11,
+    "train_strikes": 13,
+    "val_smiles": 10000,
+    "val_strikes": 13,
+    "mc_paths": 50000,
+    "spot": 1.0,
+    "seed": 42,
+    "epochs": 100,
+    "batch_size": 4096,
+    "learning_rate": 0.001,
+    "lr_scheduler": true,
+    "early_stopping_patience": 20,
+    "dataset_checkpoint_every": 500,
+    "resume_dataset_generation": true,
+    "cleanup_checkpoints_after_completion": false,
+    "hidden_layers": [
+      30,
+      30,
+      30,
+      30
+    ],
+    "activation": "ELU",
+    "resume_training": true,
+    "resume_from": "latest",
+    "warm_start": true,
+    "warm_start_path": null,
+    "output_dir": "/content/drive/MyDrive/random_grids_results"
+  },
+  "best_val_loss": 0.0009866771121007892,
+  "best_epoch": 95,
+  "total_epochs": 100,
+  "timestamp": "20250827_174636"
+}
