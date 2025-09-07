@@ -2,9 +2,10 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17018686.svg)](https://doi.org/10.5281/zenodo.17018686)
 
 
-Framework for **pricing** and **calibration** of volatility surfaces with neural networks.
+Framework for **volatility surface approximation**  with neural networks.
+Experience sub-basis-point accuracy with order-of-magnitude speedup over Monte Carlo methods.
 It includes dataset generators (*random grid*), neural pricers (grid, pointwise, multi‑regime),
-Monte Carlo engines for rough/classical models, and post‑processing tools (surface interpolation and smile repair).
+Monte Carlo engines for rough/classical models, and post‑processing tools.
 
 > Status: research project in progress (APIs may change).
 
@@ -17,8 +18,8 @@ Monte Carlo engines for rough/classical models, and post‑processing tools (sur
   - Pointwise (single queries (	$\theta$, T, K)) with *random grid* and time buckets
   - Multi‑regime (short/mid/long) with automatic routing
 - **Data generation**: Monte Carlo with **absorption** handling for rough models (long‑term regime)
-- **Supported processes** (excerpt): Rough Bergomi, Rough Heston, Lifted Heston, GBM, Local Vol, jump‑diffusion processes (Kou/Merton)
-- **Post‑processing**: surface interpolation and *smile repair* modules
+- **Supported processes** (excerpt): Rough Bergomi, Rough Heston, Lifted Heston, GBM, jump‑diffusion processes (Kou/Merton)
+- **Post‑processing**: surface interpolation and smile repair modules
 - **Examples**: scripts for stability analysis, MC debugging, and long‑term absorption
 
 ---
@@ -32,6 +33,21 @@ Monte Carlo engines for rough/classical models, and post‑processing tools (sur
 
 ---
 
+## Try It Now - Interactive Demo
+
+**Experience the framework in action with our interactive demo:**
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/BianchiGiacomo/deepLearningVolatility/blob/main/examples/GoogleColab/dlvol_demo_colab.ipynb)
+
+**What you'll see:**
+- Pre-trained neural networks generating volatility surfaces in milliseconds
+- Interactive parameter exploration for rough volatility models
+- Performance comparisons with traditional Monte Carlo methods
+- Real-time implied volatility smile visualization
+
+*No installation required - runs entirely in your browser.*
+
+---
 ## Requirements
 
 - Python **>= 3.8.1**
@@ -41,7 +57,9 @@ Monte Carlo engines for rough/classical models, and post‑processing tools (sur
 
 ---
 
-## Installation
+## Local Installation (Optional)
+
+*Want to run locally or modify the code? Install the framework:*
 
 ### Poetry (recommended)
 ```bash
@@ -62,6 +80,8 @@ pip install -e .
 
 ## Quickstart
 
+*After installation, explore these examples to understand the framework:*
+
 You can run the ready-to-use scripts in the `examples/` folder to explore the framework:
 
 ```bash
@@ -80,14 +100,11 @@ python examples/multiregime_test_local.py
 
 Parameters and thresholds can be tweaked directly inside the scripts.
 
-### Run on Google Colab
+## Run on Google Colab
 
-The folder examples/GoogleColab/ contains Jupyter notebooks to generate training datasets and to train neural pricers using free GPUs on Google Colab.
-
-### Notebooks
-
-dlvol_MultiRegimeGridPricer.ipynb [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/BianchiGiacomo/deepLearningVolatility/blob/main/examples/GoogleColab/dlvol_MultiRegimeGridPricer.ipynb)
-dlvol_PointwisePricer.ipynb [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/BianchiGiacomo/deepLearningVolatility/blob/main/examples/GoogleColab/dlvol_PointwisePricer.ipynb)
+### Train Your Own Models
+- [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/BianchiGiacomo/deepLearningVolatility/blob/main/examples/GoogleColab/dlvol_MultiRegimeGridPricer.ipynb) **dlvol_MultiRegimeGridPricer.ipynb** - Multi-regime training
+- [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/BianchiGiacomo/deepLearningVolatility/blob/main/examples/GoogleColab/dlvol_PointwisePricer.ipynb) **dlvol_PointwisePricer.ipynb** - Pointwise training
 
 To use these notebooks if the repository is private, you must provide a GitHub Personal Access Token (PAT) with scope=repo (or a fine‑grained token with “Contents: Read”) to install the package inside Colab.
 
