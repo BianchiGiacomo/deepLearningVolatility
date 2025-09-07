@@ -37,7 +37,7 @@ Monte Carlo engines for rough/classical models, and post‑processing tools.
 
 **Experience the framework in action with our interactive demo:**
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/BianchiGiacomo/deepLearningVolatility/blob/main/examples/GoogleColab/dlvol_demo_colab.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/BianchiGiacomo/deepLearningVolatility/blob/master/examples/GoogleColab/dlvol_demo_colab.ipynb)
 
 **What you'll see:**
 - Pre-trained neural networks generating volatility surfaces in milliseconds
