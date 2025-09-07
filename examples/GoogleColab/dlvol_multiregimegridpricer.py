@@ -1020,7 +1020,7 @@ def run_complete_fixed_example():
     # Training configuration
     TRAINING_CONFIG = {
         'output_dir': output_dir,
-        'epochs_per_regime': 200,
+        'epochs_per_regime': 500,
         'batch_size': 256,
         'learning_rate': 1e-3,
         'checkpoint_every': 100,
@@ -1085,7 +1085,7 @@ def run_complete_fixed_example():
         dataset_type='train'
     )
 
-    targets_train = {'short': 3_000, 'mid': 3_000, 'long': 3_000}
+    targets_train = {'short': 7_000, 'mid': 7_000, 'long': 7_000}
     # Generate with a reduced number for quick test
     train_datasets = train_builder.build_multi_regime_dataset(
         multi_regime_pricer=multi_pricer,
@@ -1112,7 +1112,7 @@ def run_complete_fixed_example():
         dataset_type='val'
     )
 
-    targets_val = {'short': 500, 'mid': 500, 'long': 500}
+    targets_val = {'short': 1000, 'mid': 1000, 'long': 1000}
     val_datasets = val_builder.build_multi_regime_dataset(
         multi_regime_pricer=multi_pricer,
         n_samples=targets_val,
@@ -1180,12 +1180,20 @@ def run_complete_fixed_example():
     print("="*60)
 
     # Test with NON-normalized parameters
+    # Rough Heston
+    #theta_values = {
+    #    'H': 0.10,
+    #    'nu': 0.35,
+    #    'rho': -0.70,
+    #    'kappa': 1.50,
+    #    'theta_var': 0.04,
+    #}
+    # Rough Bergomi
     theta_values = {
-        'H': 0.10,
-        'nu': 0.35,
-        'rho': -0.70,
-        'kappa': 1.50,
-        'theta_var': 0.04,
+     'H'  : 0.10,
+     'eta': 0.35,
+     'rho': -0.70,
+     'xi0': 0.04,
     }
     param_order = process.param_info.names
     test_theta = torch.tensor([[theta_values[p] for p in param_order]], device=device, dtype=torch.float32)
