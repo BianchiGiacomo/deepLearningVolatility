@@ -1501,6 +1501,92 @@
 		\end{tabular}
 	\end{center}
 	
+	\section{Comprehensive validation results}
+	\label{sec:comprehensive_validation}
+	
+	\noindent\textbf{Scope.} We assess the pointwise (random–grid) pricer and the associated calibration step using a Monte Carlo (MC) benchmark, following the test design in \citet{Baschetti2024DeepCalibrationRandomGrids}. We report where results are \emph{good/solid} and where there is \emph{clear room for improvement}.
+	
+	%------------------------------------------------------------
+	\subsection*{Out-of-sample IV accuracy (MC benchmark)}
+	\label{subsec:oos_iv}
+	
+	Table~\ref{tab:oos_metrics} reports absolute IV errors against MC. The mean absolute error (MAE) and RMSE are small in absolute terms (a few $10^{-3}$). The 95th percentile remains below 1\% IV. This is \textbf{good} for OOS performance on random grids.
+	
+	\begin{table}[t]
+		\centering
+		\caption{Out-of-sample errors on implied volatility (absolute IV units).}
+		\label{tab:oos_metrics}
+		\begin{tabular}{lrrrrrrr}
+			\toprule
+			Metric & MAE & RMSE & q05 & q25 & q50 & q75 & q95 \\
+			\midrule
+			Value  & 0.00264 & 0.00390 & 0.00017 & 0.00089 & 0.00186 & 0.00339 & 0.00761 \\
+			\bottomrule
+		\end{tabular}
+		
+		\smallskip
+		\footnotesize
+		\textit{Reading.} Quantiles (qXX) are taken over all strikes/maturities.
+	\end{table}
+	
+	\noindent\textit{Where to improve.} The right tail (q95) concentrates on very short maturities and far wings. This suggests (i) stronger loss weighting on short-$T$ and wings; (ii) denser coverage of those regions in the random-smile sampler.
+	
+	%------------------------------------------------------------
+	\subsection*{No–arbitrage checks}
+	
+	We verify discrete vertical, butterfly and calendar conditions on the evaluation lattice. The current run exhibits \textbf{zero} violations in all three checks, which is consistent with an arbitrage-free target model and a sufficiently smooth learned mapping.
+	
+	%------------------------------------------------------------
+	\subsection*{MC vs NN alignment (45-degree plots)}
+	
+	Figure~\ref{fig:fortyfive} shows NN-predicted IVs against MC IVs for train/test sets. The point clouds lie close to the identity, and the dispersion matches Table~\ref{tab:oos_metrics}. This indicates that most OOS error arises from specific regions (short $T$, wings) rather than a global bias. In our run, train $R^2\approx0.989$ and test $R^2\approx0.977$ (RMSE $\approx0.0039/0.0050$).
+	
+	\begin{figure}[t]
+		\centering
+		% Adjust the path if your figures live elsewhere:
+		\includegraphics[width=\linewidth]{../images/45_degree_plot.png}
+		\caption{Train (left) and test (right) 45-degree plots: NN IV vs.\ MC IV. Dashed line = identity.}
+		\label{fig:fortyfive}
+	\end{figure}
+	
+	%------------------------------------------------------------
+	\subsection*{Parameter recovery}
+	
+	We calibrate back parameters from synthetic surfaces and summarise errors (prediction minus truth) in Table~\ref{tab:param_recovery}. On average, the network shows a \emph{mild underestimation} (negative mean/median) across all parameters, with overestimation ratios $<0.5$. Tails (q95) are \emph{somewhat wider} for $H$ and $\rho$ than in \citet{Baschetti2024DeepCalibrationRandomGrids}, suggesting targeted improvements for short maturities and leverage-sensitive regions.
+	
+	\begin{table}[t]
+		\centering
+		\caption{Parameter recovery errors (prediction minus true).}
+		\label{tab:param_recovery}
+		\begin{tabular}{lrrrrrr}
+			\toprule
+			Parameter & mean & median & q95 & std & min & max \\
+			\midrule
+			$H$   & $-0.00368$ & $-0.00283$ & $0.01183$ & $0.01415$ & $-0.08549$ & $0.05991$ \\
+			$\eta$& $-0.01193$ & $-0.01304$ & $0.04346$ & $0.02952$ & $-0.09369$ & $0.06286$ \\
+			$\rho$& $-0.00558$ & $-0.00453$ & $0.02258$ & $0.03410$ & $-0.15126$ & $0.17068$ \\
+			$\xi_0$& $-0.00903$ & $-0.01457$ & $0.10020$ & $0.06464$ & $-0.13073$ & $0.11228$ \\
+			\bottomrule
+		\end{tabular}
+		
+		\smallskip
+		\footnotesize
+		\textit{Interpretation.} Means/medians close to zero indicate small biases; wider q95 for $H$ and $\rho$ points to short-end and leverage sensitivity.
+	\end{table}
+	
+	\noindent\textit{Assessment.}
+	\begin{itemize}
+		\item \textbf{Good/solid:} small average biases; medians close to zero; directionally consistent across runs.
+		\item \textbf{To improve:} reduce q95 for $H$ and $\rho$ via loss re-weighting on short-$T$/wings and better parameter re-parametrisation.
+	\end{itemize}
+	
+	%------------------------------------------------------------
+	\subsection*{Calibration time distribution}
+	
+	Over the validation batch, calibration times (seconds) are: median $2.26$, mean $2.34$, min $1.75$, max $3.70$ (IQR $\approx$ 2.08–2.62). This is \textbf{practically good} (seconds), though slower than the $\sim$1\,s reported by \citet{Baschetti2024DeepCalibrationRandomGrids} with a hand-coded forward/gradient pipeline.
+	
+	%------------------------------------------------------------
+	
 	\chapter{Future Development and Contribution Opportunities}
 	\label{ch:future-development}
 	
