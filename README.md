@@ -182,4 +182,4 @@ Bianchi, G. (2025). *Deep Learning Volatility* (v1.0.0) [Software]. https://doi.
 
 ## License
 
-MIT License – see the `LICENSE` file.
+MIT — see [LICENSE](./LICENSE).
